@@ -37,9 +37,17 @@ class PetSprite {
     return Math.round(PetAtlas.CELL_HEIGHT * this.scale);
   }
 
+  /** Picture for a row: row-specific first, then the pet status (e.g. "ready" while idling unread), then the row's status. */
   imageFor(row) {
     const states = (this.pet && this.pet.states) || {};
-    return states[row] || states[STATUS_OF_ROW[row]] || this.pet;
+    const status = row === 'idle' ? this.status : null;
+    return states[row] || (status && states[status]) || states[STATUS_OF_ROW[row]] || this.pet;
+  }
+
+  showImage(row) {
+    const img = this.el.querySelector('img');
+    const src = this.imageFor(row).url;
+    if (img && img.getAttribute('src') !== src) img.src = src;
   }
 
   setPet(pet, scale) {
@@ -73,20 +81,23 @@ class PetSprite {
   /**
    * Play an animation row.
    * @param {string} state row name (idle, running, waiting, ...)
-   * @param {{loops?: number, onDone?: Function}} options finite loops call onDone afterwards
+   * @param {{loops?: number, onDone?: Function, status?: string}} options finite loops call onDone
+   *   afterwards; `status` is the pet status, which image pets use to pick a picture
    */
-  play(state, { loops = Infinity, onDone = null } = {}) {
+  play(state, { loops = Infinity, onDone = null, status } = {}) {
     const row = PetAtlas.ROW_INDEX[state] || PetAtlas.ROW_INDEX.idle;
-    if (this.state === row.state && loops === Infinity && this.pending && this.pending.loops === Infinity) return;
+    if (status !== undefined) this.status = status;
+    if (this.state === row.state && loops === Infinity && this.pending && this.pending.loops === Infinity) {
+      if (this.pet && this.pet.kind !== 'atlas') this.showImage(row.state);
+      return;
+    }
     clearTimeout(this.timer);
     this.state = row.state;
     this.pending = { loops, onDone };
     if (!this.pet) return;
 
     if (this.pet.kind !== 'atlas') {
-      const img = this.el.querySelector('img');
-      const src = this.imageFor(row.state).url;
-      if (img && img.getAttribute('src') !== src) img.src = src;
+      this.showImage(row.state);
       this.el.className = this.el.className.replace(/\banim-[\w-]+/g, '').trim();
       if (!this.reducedMotion) this.el.classList.add(`anim-${row.state}`);
       if (loops !== Infinity) {

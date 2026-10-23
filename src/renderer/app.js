@@ -131,7 +131,7 @@ function statusAnimation() {
 
 function playStatus() {
   if (state.temporary) return;
-  sprite.play(statusAnimation());
+  sprite.play(statusAnimation(), { status: state.aggregate.status });
 }
 
 function playOnce(name, loops = 1) {

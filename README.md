@@ -154,7 +154,7 @@ claude-pet use chara
 | `--name` | 表示名 |
 | `--height` | 「大」サイズでの高さ（px）。「小」はその半分、「中」は 3/4 です。省略するとドット絵と同じ 208px |
 | `--group` | グループ名。`claude-pet rotate on --group <名前>` で、同じグループのペットだけで交代できます |
-| `--state <状態>=<画像>` | 状態ごとに別のイラストを使う（`idle`, `running`, `waiting`, `ready`, `failed`）。何度でも指定できます |
+| `--state <状態>=<画像>` | 状態ごとに別のイラストを使う（`idle`, `running`, `waiting`, `ready`, `failed`、クリックしたときの `waving`）。何度でも指定できます。`ready` の絵は、完了した結果を見るまで表示され続けます |
 
 ```bash
 # 例: ふだんは笑顔、作業中は真剣な顔、完了したらガッツポーズ
