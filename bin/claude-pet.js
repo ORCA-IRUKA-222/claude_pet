@@ -24,8 +24,11 @@ const HELP = `claude-pet — Claude Code のデスクトップペット
   claude-pet next                次のペットに交代
   claude-pet rotate on|off [--every 60] [--group <名前> | --all]
                                  一定時間ごとにペットを自動で交代
-  claude-pet add-image <画像> [--name 名前]
-                                 透過 PNG / WebP / GIF 1 枚からペットを作成
+  claude-pet add-image <画像> [--id id] [--name 名前] [--group グループ] [--height 高さ]
+                     [--state <状態>=<画像> ...]
+                                 透過 PNG / WebP / GIF のイラストからペットを作成
+                                 （--height は「大」サイズのときの高さ px。状態ごとに別の絵も指定可:
+                                   idle, running, waiting, ready, failed）
   claude-pet build <design.js> [--out <dir>] [--install]
                                  コードで描いたペットをスプライトシートに書き出し
 `;
@@ -318,9 +321,24 @@ async function main(argv) {
     }
     case 'add-image': {
       const { createImagePet } = require('../src/core/pets');
-      const file = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--name');
+      const valueOptions = new Set(['--id', '--name', '--group', '--height', '--state']);
+      const file = args.find((a, i) => !a.startsWith('--') && !valueOptions.has(args[i - 1]));
       if (!file || !fs.existsSync(file)) throw new Error('画像ファイルを指定してください');
-      const pet = createImagePet(file, { name: option(args, '--name') });
+      const states = {};
+      args.forEach((a, i) => {
+        if (a !== '--state') return;
+        const [state, image] = String(args[i + 1] || '').split(/=(.*)/s);
+        if (!state || !image || !fs.existsSync(image))
+          throw new Error(`--state は <状態>=<画像> の形で指定してください: ${args[i + 1]}`);
+        states[state] = image;
+      });
+      const pet = createImagePet(file, {
+        id: option(args, '--id'),
+        name: option(args, '--name'),
+        group: option(args, '--group'),
+        height: option(args, '--height'),
+        states,
+      });
       console.log(`ペットを作成しました: ${pet.displayName} (${pet.key || pet.id}) → ${pet.dir}`);
       console.log(`切り替えるには: claude-pet use ${pet.id}`);
       break;

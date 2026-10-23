@@ -26,6 +26,41 @@ function insideDir(dir, file) {
   return rel && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
+// Names an image pet can give per-state pictures for: animation rows and pet statuses.
+const IMAGE_STATES = new Set([
+  'idle',
+  'running',
+  'review',
+  'waiting',
+  'failed',
+  'ready',
+  'jumping',
+  'waving',
+  'running-left',
+  'running-right',
+]);
+
+function readSize(file) {
+  try {
+    const fd = fs.openSync(file, 'r');
+    const header = Buffer.alloc(64);
+    fs.readSync(fd, header, 0, 64, 0);
+    fs.closeSync(fd);
+    return readImageSize(header);
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve an image inside the pet folder; null if it is missing, outside, or unreadable. */
+function imageInfo(dir, name) {
+  if (!name) return null;
+  const file = path.resolve(dir, String(name));
+  if (!insideDir(dir, file) || !fs.existsSync(file)) return null;
+  const size = readSize(file);
+  return size ? { file, width: size.width, height: size.height } : null;
+}
+
 function loadPet(dir, origin) {
   const manifest = readJSON(path.join(dir, 'pet.json'), null);
   if (!manifest || typeof manifest !== 'object') return null;
@@ -46,22 +81,29 @@ function loadPet(dir, origin) {
   const kind = sheetName ? 'atlas' : imageName ? 'image' : null;
   if (!kind) return null;
 
-  const file = path.resolve(dir, String(sheetName || imageName));
-  if (!insideDir(dir, file) || !fs.existsSync(file)) return null;
+  const main = imageInfo(dir, sheetName || imageName);
+  if (!main) return null;
+  const { file } = main;
+  const size = main;
 
-  let size = null;
-  try {
-    const fd = fs.openSync(file, 'r');
-    const header = Buffer.alloc(64);
-    fs.readSync(fd, header, 0, 64, 0);
-    fs.closeSync(fd);
-    size = readImageSize(header);
-  } catch {
-    return null;
+  if (kind === 'image') {
+    // Illustrations can set their on-screen height (px at the largest size) and per-state pictures.
+    const states = {};
+    for (const [state, name] of Object.entries(manifest.states || {})) {
+      const info = IMAGE_STATES.has(state) ? imageInfo(dir, name) : null;
+      if (info) states[state] = info;
+    }
+    const displayHeight = Number(manifest.height);
+    return {
+      ...base,
+      kind,
+      file,
+      width: size.width,
+      height: size.height,
+      states,
+      displayHeight: Number.isFinite(displayHeight) ? Math.min(Math.max(displayHeight, 80), 900) : null,
+    };
   }
-  if (!size) return null;
-
-  if (kind === 'image') return { ...base, kind, file, width: size.width, height: size.height };
 
   // Atlas: 8 columns; cells keep the 192:208 aspect so scaled sheets work too.
   if (size.width % atlas.COLUMNS !== 0) return null;
@@ -113,20 +155,35 @@ function slugify(name) {
   return slug || `pet-${Date.now().toString(36)}`;
 }
 
-/** Install a single transparent image as a pet under ~/.claude-pet/pets/<id>. */
-function createImagePet(imagePath, { name, description = '' } = {}) {
+/**
+ * Install a transparent image (an illustration, a sticker...) as a pet under ~/.claude-pet/pets/<id>.
+ * `states` maps a state (idle, running, waiting, ready, failed, ...) to another image for that state.
+ */
+function createImagePet(imagePath, { id: wantedId, name, description = '', group = null, height = null, states = {} } = {}) {
+  const copyImage = (source, base) => {
+    const size = readSize(path.resolve(source));
+    if (!size) throw new Error(`PNG / WebP / GIF の画像を指定してください: ${source}`);
+    const fileName = `${base}.${size.format}`;
+    fs.copyFileSync(path.resolve(source), path.join(dir, fileName));
+    return fileName;
+  };
   const source = path.resolve(imagePath);
-  const header = fs.readFileSync(source).subarray(0, 64);
-  const size = readImageSize(header);
-  if (!size) throw new Error('PNG / WebP / GIF の画像を指定してください');
+  if (!readSize(source)) throw new Error('PNG / WebP / GIF の画像を指定してください');
+  for (const state of Object.keys(states)) {
+    if (!IMAGE_STATES.has(state)) throw new Error(`知らない状態です: ${state}（${[...IMAGE_STATES].join(', ')}）`);
+  }
 
   const displayName = name || path.basename(source, path.extname(source));
-  const id = slugify(displayName);
+  if (wantedId && !/^[a-z0-9][a-z0-9-]*$/.test(wantedId)) throw new Error('--id は英小文字・数字・ハイフンで指定してください');
+  const id = wantedId || slugify(displayName);
   const dir = path.join(homeDir(), 'pets', id);
   fs.mkdirSync(dir, { recursive: true });
-  const imageFile = `pet.${size.format}`;
-  fs.copyFileSync(source, path.join(dir, imageFile));
-  const manifest = { id, displayName, description, kind: 'image', imagePath: imageFile };
+  const manifest = { id, displayName, description, kind: 'image', imagePath: copyImage(source, 'pet') };
+  if (group) manifest.group = group;
+  if (height) manifest.height = Number(height);
+  const stateFiles = {};
+  for (const [state, file] of Object.entries(states)) stateFiles[state] = copyImage(file, `state-${state}`);
+  if (Object.keys(stateFiles).length) manifest.states = stateFiles;
   fs.writeFileSync(path.join(dir, 'pet.json'), JSON.stringify(manifest, null, 2) + '\n');
   return loadPet(dir, 'custom');
 }

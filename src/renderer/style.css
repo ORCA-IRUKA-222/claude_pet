@@ -260,6 +260,96 @@ button {
   }
 }
 
+/* Illustrations (image pets with a display height) move more gently and get a soft shadow. */
+.sprite.illust img {
+  filter: drop-shadow(0 3px 5px rgba(30, 20, 30, 0.3));
+}
+.illust.anim-idle img {
+  animation: i-breathe 3.2s ease-in-out infinite;
+}
+.illust.anim-running img,
+.illust.anim-running-right img,
+.illust.anim-running-left img {
+  animation: i-bob 0.9s ease-in-out infinite;
+}
+.illust.anim-running-right img,
+.illust.anim-running-left img {
+  animation-duration: 0.45s;
+}
+.illust.anim-review img {
+  animation: i-tilt 2.4s ease-in-out infinite;
+}
+.illust.anim-waiting img {
+  animation: i-ask 1.2s ease-in-out infinite;
+}
+.illust.anim-waving img {
+  animation: i-sway 0.8s ease-in-out infinite;
+}
+.illust.anim-jumping img {
+  animation: i-jump 0.8s ease-out infinite;
+}
+.illust.anim-failed img {
+  animation: i-droop 2s ease-in-out infinite;
+  filter: saturate(0.6) brightness(0.95) drop-shadow(0 3px 5px rgba(30, 20, 30, 0.3));
+}
+
+@keyframes i-breathe {
+  50% {
+    transform: translateY(0.6%) scale(1.008, 0.994);
+  }
+}
+@keyframes i-bob {
+  50% {
+    transform: translateY(-2%);
+  }
+}
+@keyframes i-tilt {
+  25% {
+    transform: rotate(-1.5deg);
+  }
+  75% {
+    transform: rotate(1.5deg);
+  }
+}
+@keyframes i-ask {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0);
+  }
+  35% {
+    transform: translateY(-3.5%) rotate(-1.2deg);
+  }
+  65% {
+    transform: translateY(0) rotate(0.8deg);
+  }
+}
+@keyframes i-sway {
+  25% {
+    transform: rotate(-2.5deg);
+  }
+  75% {
+    transform: rotate(2.5deg);
+  }
+}
+@keyframes i-jump {
+  0%,
+  100% {
+    transform: translateY(0) scale(1.01, 0.99);
+  }
+  45% {
+    transform: translateY(-7%);
+  }
+}
+@keyframes i-droop {
+  0%,
+  100% {
+    transform: translateY(1.2%) scale(0.995);
+  }
+  50% {
+    transform: translateY(2%) scale(0.99);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sprite img,
   .dot {

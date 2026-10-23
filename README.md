@@ -16,7 +16,7 @@ ChatGPT の「ペット」機能と同じことを **Claude Code** でできる�
 | ペットから新しいチャットを始める（Quick Chat） | クイックチャット。ペットの下の入力欄から Claude Code に質問し、続きはターミナルで再開できる |
 | Mini 表示 | ミニ表示（状態と件数だけの小さなピル） |
 | `/pet` で表示・非表示 | Claude Code で `/pet`（モデルを呼ばないのでトークンを消費しない） |
-| カスタムペット / `hatch-pet` スキル | `/hatch-pet` で Claude がペットをコードで描いて作成。画像 1 枚からも作れる |
+| カスタムペット / `hatch-pet` スキル | `/hatch-pet` で Claude がペットをコードで描いて作成。透過イラストをそのままペットにもできる |
 | Codex のペット形式（`pet.json` + 8x9 スプライトシート） | そのまま読み込めます。`~/.codex/pets` や Petdex のペットも使えます |
 
 ## 必要なもの
@@ -139,14 +139,30 @@ claude-pet use <id>
 
 ![Mochi の全アニメーション](pets/mochi/qa/contact-sheet.png)
 
-### 画像 1 枚から作る
+### イラストからペットを作る
 
-透過 PNG / WebP / GIF があれば、そのままペットにできます（動きはアプリが付けます）。
+背景が透明な PNG / WebP / GIF のイラストは、そのままペットにできます。動き（呼吸・作業中の弾み・入力待ちの合図・完了のジャンプなど）はアプリが付け、輪郭には柔らかい影が付きます。
 
 ```bash
-claude-pet add-image ~/Pictures/neko.png --name ねこ
-claude-pet use ねこ
+claude-pet add-image ~/Pictures/chara.png --id chara --name キャラ名 --height 320
+claude-pet use chara
 ```
+
+| オプション | 内容 |
+| --- | --- |
+| `--id` | ペットの id（英小文字・数字・ハイフン）。省略すると名前から作ります |
+| `--name` | 表示名 |
+| `--height` | 「大」サイズでの高さ（px）。「小」はその半分、「中」は 3/4 です。省略するとドット絵と同じ 208px |
+| `--group` | グループ名。`claude-pet rotate on --group <名前>` で、同じグループのペットだけで交代できます |
+| `--state <状態>=<画像>` | 状態ごとに別のイラストを使う（`idle`, `running`, `waiting`, `ready`, `failed`）。何度でも指定できます |
+
+```bash
+# 例: ふだんは笑顔、作業中は真剣な顔、完了したらガッツポーズ
+claude-pet add-image smile.png --id chara --name キャラ名 --height 320 \
+  --state running=serious.png --state ready=victory.png
+```
+
+背景を自動で消す機能はありません。背景付きの画像は、透過 PNG にしてから追加してください。
 
 ### Codex / ChatGPT / Petdex のペットを使う
 

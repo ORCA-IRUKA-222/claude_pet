@@ -2,6 +2,17 @@
 
 /* global PetAtlas */
 
+// Image pets may give a picture per animation row or per pet status.
+const STATUS_OF_ROW = {
+  idle: 'idle',
+  running: 'running',
+  review: 'running',
+  waiting: 'waiting',
+  failed: 'failed',
+  jumping: 'ready',
+  waving: 'ready',
+};
+
 // Plays one animation row at a time. Atlas pets step through spritesheet
 // frames using the Codex frame timings; image pets swap a CSS animation class.
 class PetSprite {
@@ -15,11 +26,20 @@ class PetSprite {
   }
 
   get width() {
+    const pet = this.pet;
+    if (pet && pet.kind === 'image' && pet.displayHeight) return Math.round((this.height * pet.width) / pet.height);
     return Math.round(PetAtlas.CELL_WIDTH * this.scale);
   }
 
   get height() {
+    const pet = this.pet;
+    if (pet && pet.kind === 'image' && pet.displayHeight) return Math.round(pet.displayHeight * this.scale);
     return Math.round(PetAtlas.CELL_HEIGHT * this.scale);
+  }
+
+  imageFor(row) {
+    const states = (this.pet && this.pet.states) || {};
+    return states[row] || states[STATUS_OF_ROW[row]] || this.pet;
   }
 
   setPet(pet, scale) {
@@ -30,6 +50,7 @@ class PetSprite {
     el.style.width = `${this.width}px`;
     el.style.height = `${this.height}px`;
     el.classList.toggle('pixel', Boolean(pet && pet.pixelArt));
+    el.classList.toggle('illust', Boolean(pet && pet.kind === 'image' && pet.displayHeight));
     el.style.backgroundImage = '';
     if (!pet) return;
 
@@ -63,6 +84,9 @@ class PetSprite {
     if (!this.pet) return;
 
     if (this.pet.kind !== 'atlas') {
+      const img = this.el.querySelector('img');
+      const src = this.imageFor(row.state).url;
+      if (img && img.getAttribute('src') !== src) img.src = src;
       this.el.className = this.el.className.replace(/\banim-[\w-]+/g, '').trim();
       if (!this.reducedMotion) this.el.classList.add(`anim-${row.state}`);
       if (loops !== Infinity) {

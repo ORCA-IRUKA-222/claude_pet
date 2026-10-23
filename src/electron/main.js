@@ -74,6 +74,13 @@ function petForRenderer(p, announce = false) {
     cellHeight: p.cellHeight,
     rows: p.rows,
     pixelArt: p.pixelArt,
+    displayHeight: p.displayHeight || null,
+    states: Object.fromEntries(
+      Object.entries(p.states || {}).map(([state, info]) => [
+        state,
+        { url: pathToFileURL(info.file).href, width: info.width, height: info.height },
+      ]),
+    ),
   };
 }
 

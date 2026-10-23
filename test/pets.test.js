@@ -115,3 +115,29 @@ test('a characters file builds one pet per character with its group', () => {
     assert.ok(fs.existsSync(path.join(dir, 'out', r.manifest.id, 'spritesheet.png')));
   }
 });
+
+test('illustration pets keep their display height and per-state pictures', () => {
+  const dir = tempDir();
+  const main = path.join(dir, 'smile.png');
+  const grin = path.join(dir, 'grin.png');
+  writePNG(main, 300, 400);
+  writePNG(grin, 320, 400);
+  const pet = createImagePet(main, {
+    id: 'illust-test',
+    name: 'テスト',
+    group: 'Sample Team',
+    height: 320,
+    states: { ready: grin },
+  });
+  assert.equal(pet.id, 'illust-test');
+  assert.equal(pet.displayName, 'テスト');
+  assert.equal(pet.group, 'Sample Team');
+  assert.equal(pet.displayHeight, 320);
+  assert.deepEqual(Object.keys(pet.states), ['ready']);
+  assert.equal(pet.states.ready.width, 320);
+  const manifest = JSON.parse(fs.readFileSync(path.join(pet.dir, 'pet.json'), 'utf8'));
+  assert.deepEqual(manifest.states, { ready: 'state-ready.png' });
+
+  assert.throws(() => createImagePet(main, { states: { dancing: grin } }), /知らない状態/);
+  assert.throws(() => createImagePet(main, { id: 'Bad Id' }), /--id/);
+});
