@@ -1,0 +1,7 @@
+{
+  "id": "mochi",
+  "displayName": "Mochi",
+  "description": "ふわふわのおもち。Claude Code の作業を見守ります。",
+  "spritesheetPath": "spritesheet.png",
+  "pixelArt": true
+}

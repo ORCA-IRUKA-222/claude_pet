@@ -1,0 +1,37 @@
+{
+  "name": "claude-pet",
+  "version": "0.1.0",
+  "description": "A desktop pet that watches your Claude Code sessions, like ChatGPT's pets.",
+  "main": "src/electron/main.js",
+  "bin": {
+    "claude-pet": "bin/claude-pet.js"
+  },
+  "scripts": {
+    "start": "electron .",
+    "setup": "node bin/claude-pet.js setup",
+    "uninstall-hooks": "node bin/claude-pet.js uninstall",
+    "build:pet": "node tools/build-pet.js tools/designs/mochi.js --out pets/mochi && node tools/make-icon.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "assets",
+    "bin",
+    "pets",
+    "skills",
+    "src",
+    "tools"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "desktop-pet",
+    "hooks",
+    "electron"
+  ],
+  "dependencies": {
+    "electron": "44.6.0"
+  }
+}
