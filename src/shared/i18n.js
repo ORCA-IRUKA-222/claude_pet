@@ -76,6 +76,23 @@
       'menu.hide': 'ペットを隠す',
       'menu.show': 'ペットを表示',
       'menu.quit': '終了',
+      'menu.rotation': 'ペットの交代',
+      'menu.rotation.enabled': '自動で交代する',
+      'menu.rotation.every': '{label}ごと',
+      'menu.rotation.target': '交代するペット',
+      'menu.rotation.all': 'すべてのペット',
+      'menu.rotation.next': '今すぐ交代',
+      'time.minutes': '{n} 分',
+      'time.hours': '{n} 時間',
+      'toast.arrived': '交代しました！',
+      'cli.rotationOn': '🐾 {interval}ごとにペットが交代します（対象 {count}）',
+      'cli.rotationOff': '🐾 ペットの自動交代をやめました',
+      'cli.rotationStatus': '🐾 自動交代: {state}（{interval}ごと、対象 {count}）',
+      'cli.on': 'オン',
+      'cli.off': 'オフ',
+      'cli.next': '🐾 {name} に交代しました',
+      'cli.noNext': '🐾 交代できるペットがありません',
+      'cli.groupNotFound': '🐾 グループ「{group}」のペットが見つかりません',
       'notify.waiting': '{project}: 入力を待っています',
       'notify.ready': '{project}: 完了しました',
       'notify.failed': '{project}: エラーで止まりました',
@@ -89,7 +106,7 @@
       'cli.petChanged': '🐾 ペットを {name} にしました',
       'cli.petNotFound': '🐾 ペット「{id}」が見つかりません。/pet list で一覧を表示できます',
       'cli.petList': '🐾 使えるペット: {list}',
-      'cli.usage': '使い方: /pet [show | hide | mini | full | list | use <id> | quit]',
+      'cli.usage': '使い方: /pet [show | hide | mini | full | list | use <id> | next | rotate on|off|<分> | quit]',
     },
     en: {
       'status.idle': 'Idle',
@@ -161,6 +178,23 @@
       'menu.hide': 'Hide pet',
       'menu.show': 'Show pet',
       'menu.quit': 'Quit',
+      'menu.rotation': 'Rotate pets',
+      'menu.rotation.enabled': 'Rotate automatically',
+      'menu.rotation.every': 'Every {label}',
+      'menu.rotation.target': 'Pets to rotate',
+      'menu.rotation.all': 'All pets',
+      'menu.rotation.next': 'Switch now',
+      'time.minutes': '{n} min',
+      'time.hours': '{n} h',
+      'toast.arrived': 'is here!',
+      'cli.rotationOn': '🐾 Pets now rotate every {interval} ({count} pets)',
+      'cli.rotationOff': '🐾 Pet rotation is off',
+      'cli.rotationStatus': '🐾 Rotation: {state} (every {interval}, {count} pets)',
+      'cli.on': 'on',
+      'cli.off': 'off',
+      'cli.next': '🐾 Switched to {name}',
+      'cli.noNext': '🐾 No other pet to switch to',
+      'cli.groupNotFound': '🐾 No pets in group "{group}"',
       'notify.waiting': '{project}: needs your input',
       'notify.ready': '{project}: done',
       'notify.failed': '{project}: stopped with an error',
@@ -174,7 +208,7 @@
       'cli.petChanged': '🐾 Your pet is now {name}',
       'cli.petNotFound': '🐾 No pet named "{id}". Try /pet list',
       'cli.petList': '🐾 Pets: {list}',
-      'cli.usage': 'Usage: /pet [show | hide | mini | full | list | use <id> | quit]',
+      'cli.usage': 'Usage: /pet [show | hide | mini | full | list | use <id> | next | rotate on|off|<minutes> | quit]',
     },
   };
 
@@ -187,5 +221,10 @@
     };
   }
 
-  return { STRINGS, translator, languages: Object.keys(STRINGS) };
+  /** "30 分" / "1 時間" style label for a rotation interval. */
+  function formatMinutes(t, minutes) {
+    return minutes >= 60 && minutes % 60 === 0 ? t('time.hours', { n: minutes / 60 }) : t('time.minutes', { n: minutes });
+  }
+
+  return { STRINGS, translator, formatMinutes, languages: Object.keys(STRINGS) };
 });

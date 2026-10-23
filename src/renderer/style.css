@@ -683,3 +683,7 @@ button {
   opacity: 0.5;
   cursor: default;
 }
+
+.bubble.toast .dot {
+  background: var(--accent);
+}

@@ -94,10 +94,29 @@ Claude Code の入力欄で使えます。フックが処理するので、モ�
 /pet mini | full
 /pet list         使えるペットの一覧
 /pet use <id>     ペットを切り替え
+/pet next         次のペットに交代
+/pet rotate on | off | <分>   一定時間ごとに自動で交代
 /pet quit         終了
 ```
 
 ターミナルからは `claude-pet toggle`, `claude-pet status`, `claude-pet use <id>` なども使えます（`claude-pet help` で一覧）。
+
+### ペットを自動で交代する
+
+1 体に決められないときは、一定時間ごとにペットを入れ替えられます。交代すると、新しいペットが手を振って吹き出しで名前を知らせます。
+
+```bash
+claude-pet rotate on --every 60            # 1 時間ごとに交代（すべてのペットから）
+claude-pet rotate on --group "グループ名"   # pet.json の group が同じペットだけで交代
+claude-pet next                            # 今すぐ交代
+claude-pet rotate off                      # やめる
+```
+
+Claude Code からは `/pet rotate on`, `/pet rotate 30`（30 分ごと）, `/pet next` でも操作できます。右クリックメニューの「ペットの交代」でも、オン・オフ、間隔（15 分〜3 時間）、対象のグループを選べます。
+
+- 全員が一度ずつ出てから次の一巡に入るので、同じペットばかり続くことはありません。
+- メニューや `/pet use` で選んだペットは、そこから 1 回分の間隔だけ表示が続きます。
+- スリープから復帰したときも、時間が過ぎていればすぐ交代します。
 
 ## ペットを増やす
 
@@ -115,6 +134,8 @@ ChatGPT の hatch-pet は画像生成でペットを作りますが、Claude は
 claude-pet build path/to/design.js --install
 claude-pet use <id>
 ```
+
+複数のキャラクターをまとめて作るときは、`{ template: 'chibi', group, characters: [...] }` を書いたファイルを `build` に渡すと、[`tools/designs/chibi.js`](tools/designs/chibi.js) のテンプレートで 1 体ずつ書き出し、`group` 付きでインストールします（交代のグループに使えます）。
 
 ![Mochi の全アニメーション](pets/mochi/qa/contact-sheet.png)
 
@@ -156,6 +177,9 @@ Codex 形式のペット（`pet.json` + `spritesheet.webp|png`、192x208 のセ�
 | `quickChat.model` | `null` | クイックチャットで使うモデル |
 | `claudePath` | `null` | `claude` コマンドの場所（PATH にない場合） |
 | `terminalCommand` | `null` | 「ターミナルで開く」のコマンド。例: `"wezterm start --cwd {cwd} -- {command}"` |
+| `rotation.enabled` / `rotation.intervalMinutes` | `false` / `60` | ペットの自動交代と、その間隔（分） |
+| `rotation.group` / `rotation.pets` | `null` / `[]` | 交代するペットをグループ名か id の一覧で絞る（両方空ならすべて） |
+| `rotation.order` | `"shuffle"` | `"shuffle"`（一巡ずつランダム）または `"sequence"`（順番） |
 | `staleMinutes` | `30` | 何も届かない「作業中」をひと休みに戻すまでの分数 |
 | `port` | `47717` | ペットが待ち受けるポート（環境変数 `CLAUDE_PET_PORT` でも指定可） |
 

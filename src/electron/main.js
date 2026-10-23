@@ -19,16 +19,18 @@ const {
 } = require('electron');
 
 const { APP_ROOT, getPort, homeDir, loadConfig, saveConfig } = require('../shared/config');
-const { translator } = require('../shared/i18n');
+const { translator, formatMinutes } = require('../shared/i18n');
 const { SessionTracker } = require('../core/sessions');
 const { startServer } = require('../core/server');
 const { listPets, findPet } = require('../core/pets');
 const { QuickChat } = require('../core/quickchat');
+const rotation = require('../core/rotation');
 const { openInTerminal } = require('../core/terminal');
 const installer = require('../core/installer');
 const { version } = require('../../package.json');
 
 const SCALES = { small: 0.5, medium: 0.75, large: 1 };
+const ROTATION_INTERVALS = [15, 30, 60, 120, 180];
 
 const config = loadConfig();
 let t = translator(config.language);
@@ -58,9 +60,10 @@ function sendToRenderer(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
 }
 
-function petForRenderer(p) {
+function petForRenderer(p, announce = false) {
   if (!p) return null;
   return {
+    announce,
     key: p.key,
     displayName: p.displayName,
     kind: p.kind,
@@ -174,20 +177,70 @@ function setMini(mini) {
   updateTray();
 }
 
-function setPet(key) {
+function setPet(key, { announce = false } = {}) {
   const next = findPet(key);
   if (!next) return null;
   pet = next;
   persist({ pet: next.key });
-  sendToRenderer('pet', petForRenderer(pet));
+  sendToRenderer('pet', petForRenderer(pet, announce));
   updateTray();
   return pet;
+}
+
+/** A pet picked by hand stays for a full interval before the rotation moves on. */
+function choosePet(key) {
+  const chosen = setPet(key);
+  if (chosen) persist({ rotation: { ...config.rotation, lastChangedAt: Date.now() } });
+  return chosen;
+}
+
+// ---------------------------------------------------------------- rotation
+
+function rotationCandidates() {
+  return rotation.candidates(listPets(), config.rotation);
+}
+
+function rotateNow() {
+  const { next, queue } = rotation.pickNext(rotationCandidates(), pet && pet.key, {
+    order: rotation.normalizeOrder(config.rotation.order),
+    queue: config.rotation.queue,
+  });
+  persist({ rotation: { ...config.rotation, queue, lastChangedAt: Date.now() } });
+  return next ? setPet(next, { announce: true }) : null;
+}
+
+function checkRotation() {
+  if (rotation.isDue(config.rotation)) rotateNow();
+}
+
+function updateRotation(patch) {
+  const before = config.rotation;
+  const next = { ...before, ...patch };
+  if (patch.group !== undefined || patch.pets !== undefined) next.queue = [];
+  persist({ rotation: next });
+  if (next.enabled) {
+    const keys = rotationCandidates();
+    // Switching the rotation on (or to another group) brings in a pet from that set right away.
+    if (!before.enabled || !keys.includes(pet && pet.key)) rotateNow();
+  }
+  updateTray();
+  return rotationStatus();
+}
+
+function rotationStatus() {
+  return { rotation: config.rotation, count: rotationCandidates().length, pet: pet && pet.key, petName: pet && pet.displayName };
 }
 
 // ---------------------------------------------------------------- menus
 
 function buildMenu() {
   const pets = listPets();
+  const petItem = (p) => ({
+    label: `${p.displayName}${p.origin === 'builtin' || p.origin === 'custom' ? '' : `  (${p.origin})`}`,
+    type: 'radio',
+    checked: Boolean(pet && p.key === pet.key),
+    click: () => choosePet(p.key),
+  });
   const scaleKey = Object.keys(SCALES).find((k) => SCALES[k] === config.scale) || 'small';
   const visible = Boolean(win && win.isVisible());
   return Menu.buildFromTemplate([
@@ -197,15 +250,44 @@ function buildMenu() {
     {
       label: t('menu.pets'),
       submenu: [
-        ...pets.map((p) => ({
-          label: `${p.displayName}${p.origin === 'builtin' ? '' : `  (${p.origin})`}`,
-          type: 'radio',
-          checked: pet && p.key === pet.key,
-          click: () => setPet(p.key),
-        })),
+        ...pets.filter((p) => !p.group).map(petItem),
+        ...rotation.groups(pets).map((group) => ({ label: group, submenu: pets.filter((p) => p.group === group).map(petItem) })),
         { type: 'separator' },
         { label: t('menu.reloadPets'), click: () => setPet(config.pet) },
         { label: t('menu.openPetsFolder'), click: () => openPetsFolder() },
+      ],
+    },
+    {
+      label: t('menu.rotation'),
+      submenu: [
+        {
+          label: t('menu.rotation.enabled'),
+          type: 'checkbox',
+          checked: config.rotation.enabled,
+          click: (item) => updateRotation({ enabled: item.checked }),
+        },
+        { label: t('menu.rotation.next'), click: () => rotateNow() },
+        { type: 'separator' },
+        ...ROTATION_INTERVALS.map((minutes) => ({
+          label: t('menu.rotation.every', { label: formatMinutes(t, minutes) }),
+          type: 'radio',
+          checked: Number(config.rotation.intervalMinutes) === minutes,
+          click: () => updateRotation({ intervalMinutes: minutes }),
+        })),
+        { type: 'separator' },
+        { label: t('menu.rotation.target'), enabled: false },
+        {
+          label: t('menu.rotation.all'),
+          type: 'radio',
+          checked: !config.rotation.group && !(config.rotation.pets || []).length,
+          click: () => updateRotation({ group: null, pets: [] }),
+        },
+        ...rotation.groups(pets).map((group) => ({
+          label: group,
+          type: 'radio',
+          checked: config.rotation.group === group && !(config.rotation.pets || []).length,
+          click: () => updateRotation({ group, pets: [] }),
+        })),
       ],
     },
     {
@@ -280,7 +362,8 @@ function updateTray() {
   if (!tray) return;
   const agg = tracker.aggregate();
   const attention = agg.counts.waiting + agg.counts.failed + agg.counts.ready;
-  tray.setToolTip(`Claude Pet — ${t(`status.${agg.status}`)}${attention ? ` (${attention})` : ''}`);
+  const name = pet ? `${pet.displayName} — ` : '';
+  tray.setToolTip(`Claude Pet — ${name}${t(`status.${agg.status}`)}${attention ? ` (${attention})` : ''}`);
   if (process.platform === 'darwin') tray.setTitle(attention ? String(attention) : '');
   tray.setContextMenu(buildMenu());
 }
@@ -359,10 +442,16 @@ async function handleControl({ action, value }) {
       openQuickChat();
       return {};
     case 'set-pet': {
-      const p = setPet(String(value || ''));
+      const p = choosePet(String(value || ''));
       if (!p) throw Object.assign(new Error('pet not found'), { status: 404 });
       return { pet: p.key };
     }
+    case 'next': {
+      const p = rotateNow();
+      return { pet: p ? p.key : null, petName: p ? p.displayName : null };
+    }
+    case 'rotation':
+      return value && typeof value === 'object' ? updateRotation(value) : rotationStatus();
     case 'quit':
       setTimeout(quit, 50);
       return {};
@@ -476,6 +565,10 @@ async function boot() {
   }
 
   pet = findPet(config.pet);
+  if (config.rotation.enabled && !rotationCandidates().includes(pet && pet.key)) rotateNow();
+  else checkRotation();
+  // Checked often so the switch happens on time even after the computer wakes from sleep.
+  setInterval(checkRotation, 30e3).unref();
   tracker.on('change', pushState);
   tracker.on('transition', notifyTransition);
   setInterval(() => tracker.prune(), 60e3).unref();
@@ -501,6 +594,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     quitting = true;
     quickChat.stop();
+    clearTimeout(saveTimer);
+    saveConfig(config);
   });
   app.whenReady().then(() => {
     if (process.platform === 'darwin' && app.dock) app.dock.hide();

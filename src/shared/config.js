@@ -34,6 +34,15 @@ const DEFAULTS = {
     permissionMode: 'default',
     model: null,
   },
+  rotation: {
+    enabled: false,
+    intervalMinutes: 60,
+    group: null, // rotate among pets whose pet.json has this "group"
+    pets: [], // or an explicit list of pet ids; both empty = every pet
+    order: 'shuffle', // 'shuffle' | 'sequence'
+    lastChangedAt: 0,
+    queue: [],
+  },
   claudePath: null, // defaults to `claude` on PATH
   terminalCommand: null, // e.g. "wezterm start --cwd {cwd} -- {command}"
   staleMinutes: 30,

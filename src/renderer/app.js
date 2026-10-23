@@ -44,6 +44,7 @@ const state = {
   composerOpen: false,
   chat: { messages: [], sessionId: null, cwd: '', busy: false },
   temporary: null, // a one-off animation (wave, jump) that overrides the status animation
+  toast: null, // { title, sub } shown in the bubble for a few seconds, e.g. when the pet changes
 };
 
 let t = PetI18n.translator('ja');
@@ -144,6 +145,16 @@ function playOnce(name, loops = 1) {
   });
 }
 
+let toastTimer = 0;
+function showToast(title, sub, ms = 6000) {
+  clearTimeout(toastTimer);
+  state.toast = { title, sub };
+  toastTimer = setTimeout(() => {
+    state.toast = null;
+    render();
+  }, ms);
+}
+
 // ------------------------------------------------------------------ rendering
 
 function applyI18n() {
@@ -156,7 +167,17 @@ function applyI18n() {
 function renderBubble() {
   const agg = state.aggregate;
   const s = agg.primary;
-  const show = state.config.showBubble && !state.config.mini && !state.panelOpen && s && agg.status !== 'idle';
+  const visible = state.config.showBubble && !state.config.mini && !state.panelOpen;
+  // Session news wins over the greeting toast.
+  if (visible && state.toast && agg.status === 'idle') {
+    ui.bubble.hidden = false;
+    ui.bubble.className = 'bubble status-idle toast';
+    ui.bubbleTitle.textContent = state.toast.title;
+    ui.bubbleSub.replaceChildren(document.createTextNode(state.toast.sub));
+    ui.bubbleSub.hidden = false;
+    return;
+  }
+  const show = visible && s && agg.status !== 'idle';
   ui.bubble.hidden = !show;
   if (!show) return;
   ui.bubble.className = `bubble status-${agg.status}`;
@@ -579,6 +600,7 @@ async function boot() {
   applyConfig(init.config);
   state.pet = init.pet;
   sprite.setPet(init.pet, init.config.scale);
+  if (init.pet) ui.stage.title = init.pet.displayName;
   applyState(init.state);
   setupControls();
 
@@ -587,7 +609,9 @@ async function boot() {
   api.on('pet', (pet) => {
     state.pet = pet;
     sprite.setPet(pet, state.config.scale);
+    ui.stage.title = pet.displayName;
     playOnce('waving', 2);
+    if (pet.announce) showToast(pet.displayName, t('toast.arrived'));
     render();
   });
   api.on('transition', ({ to, session }) => {

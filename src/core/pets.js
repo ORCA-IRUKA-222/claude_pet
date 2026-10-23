@@ -38,6 +38,7 @@ function loadPet(dir, origin) {
     origin,
     dir,
     pixelArt: Boolean(manifest.pixelArt),
+    group: manifest.group ? String(manifest.group) : null,
   };
 
   const sheetName = manifest.spritesheetPath || manifest.spritesheet;

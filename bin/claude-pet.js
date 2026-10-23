@@ -21,6 +21,9 @@ const HELP = `claude-pet — Claude Code のデスクトップペット
   claude-pet uninstall           登録を解除
   claude-pet pets                使えるペットの一覧
   claude-pet use <id>            ペットを切り替え
+  claude-pet next                次のペットに交代
+  claude-pet rotate on|off [--every 60] [--group <名前> | --all]
+                                 一定時間ごとにペットを自動で交代
   claude-pet add-image <画像> [--name 名前]
                                  透過 PNG / WebP / GIF 1 枚からペットを作成
   claude-pet build <design.js> [--out <dir>] [--install]
@@ -131,9 +134,90 @@ async function runPetCommand(args, { wait = true } = {}) {
       }
       return t('cli.petChanged', { name: pet.displayName });
     }
+    case 'next': {
+      if (running) {
+        const res = await client.control('next');
+        return res.petName ? t('cli.next', { name: res.petName }) : t('cli.noNext');
+      }
+      const { listPets } = require('../src/core/pets');
+      const rotation = require('../src/core/rotation');
+      const config = loadConfig();
+      const pets = listPets();
+      const { next, queue } = rotation.pickNext(rotation.candidates(pets, config.rotation), config.pet, {
+        order: rotation.normalizeOrder(config.rotation.order),
+        queue: config.rotation.queue,
+      });
+      if (!next) return t('cli.noNext');
+      config.pet = next;
+      config.rotation = { ...config.rotation, queue, lastChangedAt: Date.now() };
+      saveConfig(config);
+      return t('cli.next', { name: pets.find((p) => p.key === next).displayName });
+    }
+    case 'rotate':
+      return rotateCommand(rest, running, t);
     default:
       return t('cli.usage');
   }
+}
+
+/** "30", "30m", "90分", "2h", "1時間" → minutes */
+function parseMinutes(token) {
+  const m = /^(\d+(?:\.\d+)?)(h|時間|m|min|分)?$/.exec(String(token || '').trim());
+  if (!m) return null;
+  const value = Number(m[1]) * (m[2] === 'h' || m[2] === '時間' ? 60 : 1);
+  return value >= 1 ? Math.round(value) : null;
+}
+
+/** Arguments of `rotate`: on | off | <interval> | --every <interval> | --group <name> | --all */
+function parseRotateArgs(tokens) {
+  const patch = {};
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === 'on') patch.enabled = true;
+    else if (token === 'off') patch.enabled = false;
+    else if (token === '--every') patch.intervalMinutes = parseMinutes(tokens[++i]) || undefined;
+    else if (token === '--all') Object.assign(patch, { group: null, pets: [] });
+    else if (token === '--group') {
+      // The name runs until the next option, so names with spaces work from /pet too.
+      const words = [];
+      while (i + 1 < tokens.length && !tokens[i + 1].startsWith('--')) words.push(tokens[++i]);
+      Object.assign(patch, { group: words.join(' ') || null, pets: [] });
+    } else if (parseMinutes(token)) {
+      patch.intervalMinutes = parseMinutes(token);
+      if (patch.enabled === undefined) patch.enabled = true;
+    }
+  }
+  if (patch.intervalMinutes === undefined) delete patch.intervalMinutes;
+  return patch;
+}
+
+async function rotateCommand(tokens, running, t) {
+  const { listPets } = require('../src/core/pets');
+  const rotation = require('../src/core/rotation');
+  const { formatMinutes } = require('../src/shared/i18n');
+  const patch = parseRotateArgs(tokens);
+  const pets = listPets();
+  if (patch.group && !pets.some((p) => p.group === patch.group)) return t('cli.groupNotFound', { group: patch.group });
+
+  let state;
+  if (!Object.keys(patch).length) {
+    state = running ? (await client.control('rotation')).rotation : loadConfig().rotation;
+  } else if (running) {
+    state = (await client.control('rotation', patch)).rotation;
+  } else {
+    const config = loadConfig();
+    // lastChangedAt 0 makes the app switch right away the next time it starts.
+    config.rotation = { ...config.rotation, ...patch, ...(patch.enabled ? { lastChangedAt: 0 } : {}) };
+    saveConfig(config);
+    state = config.rotation;
+  }
+  const vars = {
+    interval: formatMinutes(t, Number(state.intervalMinutes) || 60),
+    count: rotation.candidates(pets, state).length,
+    state: state.enabled ? t('cli.on') : t('cli.off'),
+  };
+  if (!Object.keys(patch).length) return t('cli.rotationStatus', vars);
+  return state.enabled ? t('cli.rotationOn', vars) : t('cli.rotationOff');
 }
 
 function readStdin() {
@@ -197,6 +281,8 @@ async function main(argv) {
     case 'chat':
     case 'quit':
     case 'use':
+    case 'next':
+    case 'rotate':
       console.log(await runPetCommand([command, ...args]));
       break;
     case 'pet':
@@ -240,15 +326,15 @@ async function main(argv) {
       break;
     }
     case 'build': {
-      const { buildPet } = require('../tools/build-pet');
+      const { buildPets, printResult } = require('../tools/build-pet');
       const design = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--out');
       if (!design) throw new Error('design.js を指定してください');
-      const result = buildPet(design, { outDir: option(args, '--out'), install: args.includes('--install') });
-      console.log(`package: ${result.outDir}`);
-      console.log(`contact sheet: ${result.contactSheet}`);
-      if (result.installedTo) console.log(`installed: ${result.installedTo}`);
-      for (const p of result.problems) console.log(`warning: ${p}`);
-      if (!result.problems.length) console.log('validation: ok');
+      const results = buildPets(design, { outDir: option(args, '--out'), install: args.includes('--install') });
+      results.forEach(printResult);
+      const groups = [...new Set(results.map((r) => r.manifest.group).filter(Boolean))];
+      if (args.includes('--install') && groups.length) {
+        console.log(`\n交代で表示するには: claude-pet rotate on --group "${groups[0]}" --every 60`);
+      }
       break;
     }
     case 'slash-hook':
@@ -272,4 +358,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { runPetCommand, main };
+module.exports = { runPetCommand, main, parseRotateArgs, parseMinutes };

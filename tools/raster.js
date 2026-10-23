@@ -121,6 +121,57 @@ class Canvas {
     for (const [x, y] of add) this.set(x, y, color);
   }
 
+  /**
+   * Coloured ("sel-out") outline: each edge pixel takes the colour of the
+   * pixel it outlines, darkened. Reads softer than a single black line.
+   */
+  outlineSelective(darken = 0.5) {
+    const add = [];
+    const n = [
+      [0, -1],
+      [-1, 0],
+      [1, 0],
+      [0, 1],
+    ];
+    for (let y = 0; y < this.height; y++) {
+      for (let x = 0; x < this.width; x++) {
+        if (this.alpha(x, y) > 0) continue;
+        const hit = n.find(([dx, dy]) => this.alpha(x + dx, y + dy) > 0);
+        if (!hit) continue;
+        const [r, g, b] = this.get(x + hit[0], y + hit[1]);
+        add.push([x, y, [r, g, b].map((v) => Math.round(v * (1 - darken)))]);
+      }
+    }
+    for (const [x, y, c] of add) this.set(x, y, c);
+  }
+
+  /** Filled polygon (pixel-centre sampling, even-odd rule). `where(x, y)` can restrict the fill. */
+  polygon(points, color, where) {
+    const ys = points.map((p) => p[1]);
+    const y0 = Math.floor(Math.min(...ys));
+    const y1 = Math.ceil(Math.max(...ys));
+    for (let y = y0; y <= y1; y++) {
+      const sy = y + 0.5;
+      const xs = [];
+      for (let i = 0; i < points.length; i++) {
+        const [ax, ay] = points[i];
+        const [bx, by] = points[(i + 1) % points.length];
+        if (ay <= sy !== by <= sy) xs.push(ax + ((sy - ay) / (by - ay)) * (bx - ax));
+      }
+      xs.sort((a, b) => a - b);
+      for (let i = 0; i + 1 < xs.length; i += 2) {
+        for (let x = Math.ceil(xs[i] - 0.5); x <= Math.floor(xs[i + 1] - 0.5); x++) {
+          if (!where || where(x, y)) this.set(x, y, color);
+        }
+      }
+    }
+  }
+
+  /** A transparent canvas of the same size, for drawing a part on its own layer. */
+  layer() {
+    return new Canvas(this.width, this.height);
+  }
+
   flipX() {
     const out = new Canvas(this.width, this.height);
     for (let y = 0; y < this.height; y++) {
