@@ -6,7 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { APP_ROOT, claudeDir } = require('../shared/config');
+const { APP_ROOT, PERMISSION_TIMEOUT_MAX, claudeDir } = require('../shared/config');
 
 const HOOK_SCRIPT = path.join(APP_ROOT, 'src', 'hook', 'pet-hook.js');
 const CLI_SCRIPT = path.join(APP_ROOT, 'bin', 'claude-pet.js');
@@ -15,6 +15,7 @@ const SKILLS = ['pet', 'hatch-pet'];
 // Events that fire on every tool call run in the background (async) so they
 // never slow Claude down. The rest are rare and run synchronously, which keeps
 // them in order and makes sure Claude Code waits for them before exiting.
+// (The PreToolUse pause gate below is the one synchronous per-tool hook.)
 const ASYNC_EVENTS = new Set(['PreToolUse', 'PostToolUse', 'PostToolUseFailure']);
 const STATUS_EVENTS = [
   'SessionStart',
@@ -32,6 +33,8 @@ const STATUS_EVENTS = [
   'PostCompact',
   'Stop',
   'StopFailure',
+  'TaskCreated',
+  'TaskCompleted',
 ];
 
 function settingsPath() {
@@ -49,8 +52,13 @@ function buildHooks(nodePath) {
   for (const event of STATUS_EVENTS) {
     const handler = { type: 'command', command: nodePath, args: [HOOK_SCRIPT], timeout: 5 };
     if (ASYNC_EVENTS.has(event)) handler.async = true;
+    // Waits for 許可 / 拒否 from the pet; the hook itself gives up after permissionPrompt.timeoutSeconds.
+    if (event === 'PermissionRequest') handler.timeout = PERMISSION_TIMEOUT_MAX + 30;
     hooks[event] = [{ hooks: [handler] }];
   }
+  // A synchronous gate so 一時停止 in the pet can stop Claude before its next tool call.
+  // It only checks for a marker file, so it adds no network round trip to tool calls.
+  hooks.PreToolUse[0].hooks.push({ type: 'command', command: nodePath, args: [HOOK_SCRIPT, '--gate'], timeout: 5 });
   // `/pet` is handled by a synchronous hook that blocks the expansion, so it
   // toggles the pet without spending a model turn.
   hooks.UserPromptExpansion = [

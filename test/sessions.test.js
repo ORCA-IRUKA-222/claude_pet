@@ -161,3 +161,75 @@ test('invalid events are ignored', () => {
   assert.equal(tracker.handle({ session_id: 's', event: 'UserPromptSubmit', prompt: '/pet hide' }), null);
   assert.equal(tracker.list().length, 0);
 });
+
+test('a turn records how long Claude worked', () => {
+  const { tracker } = setup();
+  tracker.handle({ session_id: 's1', event: 'UserPromptSubmit', ts: 10_000 });
+  assert.equal(tracker.list()[0].turnStartedAt, 10_000);
+  tracker.handle({ session_id: 's1', event: 'Stop', ts: 82_000 });
+  const s = tracker.list()[0];
+  assert.equal(s.turnStartedAt, null);
+  assert.equal(s.lastDuration, 72_000);
+  tracker.handle({ session_id: 's1', event: 'UserPromptSubmit', ts: 90_000 });
+  assert.equal(tracker.list()[0].lastDuration, null);
+});
+
+test('files changed in this turn are listed, reset by the next prompt', () => {
+  const { tracker, send } = setup();
+  send('UserPromptSubmit');
+  send('PostToolUse', { tool_name: 'Edit', file_path: '/work/app/a.js' });
+  send('PostToolUse', { tool_name: 'Write', file_path: '/work/app/b.js' });
+  send('PostToolUse', { tool_name: 'Edit', file_path: '/work/app/a.js' });
+  assert.deepEqual(tracker.list()[0].files, ['/work/app/a.js', '/work/app/b.js']);
+  assert.ok(tracker.hasFile('s1', '/work/app/b.js'));
+  assert.ok(!tracker.hasFile('s1', '/etc/passwd'));
+  send('UserPromptSubmit');
+  assert.deepEqual(tracker.list()[0].files, []);
+});
+
+test("Claude's to-do list from TodoWrite and from TaskCreate/TaskUpdate", () => {
+  const { tracker, send } = setup();
+  send('UserPromptSubmit');
+  send('PreToolUse', {
+    tool_name: 'TodoWrite',
+    todos: [
+      { text: 'Read code', status: 'completed' },
+      { text: 'Fix bug', active: 'Fixing bug', status: 'in_progress' },
+      { text: 'Add test', status: 'pending' },
+    ],
+  });
+  assert.deepEqual(tracker.list()[0].todoProgress, { done: 1, total: 3, current: 'Fixing bug' });
+
+  const t = setup();
+  t.send('UserPromptSubmit');
+  t.send('TaskCreated', { task: { id: '1', subject: 'Plan', status: 'pending' } });
+  t.send('TaskCreated', { task: { id: '2', subject: 'Build', status: 'pending' } });
+  t.send('PostToolUse', { tool_name: 'TaskUpdate', task: { id: '1', status: 'in_progress', active: 'Planning' } });
+  assert.deepEqual(t.tracker.list()[0].todoProgress, { done: 0, total: 2, current: 'Planning' });
+  t.send('TaskCompleted', { task: { id: '1', status: 'completed' } });
+  t.send('PostToolUse', { tool_name: 'TaskUpdate', task: { id: '2', status: 'completed' } });
+  assert.deepEqual(t.tracker.list()[0].todoProgress, { done: 2, total: 2, current: null });
+  assert.equal(t.tracker.list()[0].todos[0].text, 'Plan');
+
+  // A finished list is cleared when the next piece of work starts; an unfinished one stays.
+  t.send('UserPromptSubmit');
+  assert.equal(t.tracker.list()[0].todoProgress, null);
+  t.send('TaskCreated', { task: { id: '3', subject: 'Next' } });
+  t.send('PostToolUse', { tool_name: 'TaskUpdate', task: { id: '3', status: 'deleted' } });
+  assert.equal(t.tracker.list()[0].todos.length, 0);
+});
+
+test('pausing from the pet ends the turn as idle', () => {
+  const { tracker, send } = setup();
+  send('UserPromptSubmit');
+  tracker.setPauseRequested('s1', true);
+  assert.equal(tracker.list()[0].pauseRequested, true);
+  send('PetPaused');
+  const s = tracker.list()[0];
+  assert.equal(s.status, 'idle');
+  assert.equal(s.paused, true);
+  assert.equal(s.pauseRequested, false);
+  assert.equal(typeof s.lastDuration, 'number');
+  send('UserPromptSubmit');
+  assert.equal(tracker.list()[0].paused, false);
+});

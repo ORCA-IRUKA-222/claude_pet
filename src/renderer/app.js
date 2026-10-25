@@ -1,6 +1,6 @@
 'use strict';
 
-/* global PetI18n, PetSprite */
+/* global PetI18n, PetSprite, PetTime, PetMarkdownView, PetTools */
 
 const api = window.pet;
 const $ = (id) => document.getElementById(id);
@@ -8,23 +8,35 @@ const $ = (id) => document.getElementById(id);
 const ui = {
   root: $('root'),
   panel: $('panel'),
+  speech: $('speech'),
+  speechText: $('speech-text'),
   bubble: $('bubble'),
   bubbleTitle: $('bubble-title'),
+  bubbleClock: $('bubble-clock'),
+  bubblePause: $('bubble-pause'),
   bubbleSub: $('bubble-sub'),
+  bubbleActions: $('bubble-actions'),
+  bubbleProgress: $('bubble-progress'),
+  bubbleProgressFill: $('bubble-progress-fill'),
   stage: $('stage'),
   badge: $('badge'),
+  mood: $('mood'),
   mini: $('mini'),
+  miniMood: $('mini-mood'),
   miniLabel: $('mini-label'),
   miniBadge: $('mini-badge'),
   sessionsCount: $('sessions-count'),
+  timerDot: $('timer-dot'),
   sessionList: $('session-list'),
   sessionsEmpty: $('sessions-empty'),
   setupHint: $('setup-hint'),
   tabSessions: $('tab-sessions'),
   tabChat: $('tab-chat'),
+  tabTools: $('tab-tools'),
   chatLog: $('chat-log'),
   chatStop: $('chat-stop'),
   composer: $('composer'),
+  composerFiles: $('composer-files'),
   composerInput: $('composer-input'),
   composerCwd: $('composer-cwd'),
   composerSend: $('composer-send'),
@@ -32,17 +44,34 @@ const ui = {
 
 const sprite = new PetSprite($('sprite'));
 
+const TOOL_TABS = new Set(['timer', 'memo', 'calendar']);
+const ATTENTION = ['waiting', 'failed', 'ready'];
+
 const state = {
-  config: { scale: 0.5, mini: false, showBubble: true, language: 'ja', quickChatCwd: '', home: '' },
+  config: {
+    scale: 0.5,
+    mini: false,
+    showBubble: true,
+    language: 'ja',
+    quickChatCwd: '',
+    home: '',
+    greetings: true,
+    permissionPrompt: true,
+  },
   pet: null,
   sessions: [],
   aggregate: { status: 'idle', activity: null, counts: {}, primary: null, total: 0 },
+  permissions: [],
+  modes: { dnd: null, focus: false, away: false },
   hooksInstalled: true,
   panelOpen: false,
   tab: 'sessions',
   expanded: null,
   composerOpen: false,
   chat: { messages: [], sessionId: null, cwd: '', busy: false },
+  attachments: [], // { path, name, kind: 'file' | 'screenshot' }
+  speech: null, // { text, sticky, until }
+  mood: { night: false, tired: false },
   temporary: null, // a one-off animation (wave, jump) that overrides the status animation
 };
 
@@ -57,10 +86,27 @@ function el(tag, className, text) {
   return node;
 }
 
+function button(label, onClick, className = 'text-button') {
+  const b = el('button', className, label);
+  b.type = 'button';
+  b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    onClick(b, e);
+  });
+  return b;
+}
+
 function basename(p) {
   if (!p) return '';
   const parts = String(p).split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] || p;
+}
+
+function dirname(p) {
+  const parts = String(p || '')
+    .split(/[\\/]/)
+    .filter(Boolean);
+  return parts.length > 1 ? parts[parts.length - 2] : '';
 }
 
 function firstLine(text, max = 140) {
@@ -81,6 +127,10 @@ function timeAgo(ms) {
   return t('ui.hoursAgo', { n: Math.floor(minutes / 60) });
 }
 
+function locale() {
+  return state.config.language === 'en' ? 'en-US' : 'ja-JP';
+}
+
 function sessionName(s) {
   return s.title || s.project || s.id.slice(0, 8);
 }
@@ -89,11 +139,13 @@ function activityText(s) {
   if (s.effectiveStatus === 'failed')
     return t(`error.${s.error}`) === `error.${s.error}` ? t('error.unknown') : t(`error.${s.error}`);
   if (s.effectiveStatus === 'ready') return t('bubble.ready');
+  if (s.paused && s.effectiveStatus === 'idle') return t('ui.paused');
   if (s.activity) return t(`activity.${s.activity}`);
   return t(`status.${s.effectiveStatus}`);
 }
 
 function detailText(s) {
+  if (s.pauseRequested && s.effectiveStatus === 'running') return t('ui.pauseRequested');
   switch (s.effectiveStatus) {
     case 'ready':
       return firstLine(s.message) || (s.backgroundTasks ? t('ui.backgroundTasks', { n: s.backgroundTasks }) : '');
@@ -102,6 +154,7 @@ function detailText(s) {
     case 'idle':
       return s.stale ? t('ui.stale') : firstLine(s.message) || firstLine(s.prompt);
     default:
+      if (s.todoProgress && s.todoProgress.current && !s.detail) return s.todoProgress.current;
       return s.detail || firstLine(s.prompt);
   }
 }
@@ -109,6 +162,57 @@ function detailText(s) {
 function attentionCount() {
   const c = state.aggregate.counts || {};
   return (c.waiting || 0) + (c.failed || 0) + (c.ready || 0);
+}
+
+/** Same rule as the main process: what おやすみモード / focus keeps out of the bubble. */
+function held(status) {
+  const m = state.modes || {};
+  if (!ATTENTION.includes(status)) return false;
+  if (status === 'waiting') return Boolean(m.dnd) && !m.dnd.allowWaiting;
+  return Boolean(m.dnd) || Boolean(m.focus);
+}
+
+function pendingPermission(sessionId) {
+  if (!state.config.permissionPrompt) return null;
+  return state.permissions.find((p) => p.sessionId === sessionId) || null;
+}
+
+function isWorking(s) {
+  return s.turnStartedAt && (s.effectiveStatus === 'running' || s.effectiveStatus === 'waiting');
+}
+
+function markdown(text) {
+  return PetMarkdownView.render(text, {
+    onLink: (url) => api.openExternal(url),
+    onCopy: (code) => api.copy(code),
+    copyLabel: t('ui.copyCode'),
+    copiedLabel: t('ui.copied'),
+  });
+}
+
+// ------------------------------------------------------------------ sound
+
+let audio = null;
+function beep(times = 1) {
+  try {
+    audio = audio || new AudioContext();
+    const start = audio.currentTime + 0.02;
+    for (let i = 0; i < times; i++) {
+      const osc = audio.createOscillator();
+      const gain = audio.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = i % 2 ? 660 : 880;
+      const at = start + i * 0.32;
+      gain.gain.setValueAtTime(0.0001, at);
+      gain.gain.exponentialRampToValueAtTime(0.2, at + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.25);
+      osc.connect(gain).connect(audio.destination);
+      osc.start(at);
+      osc.stop(at + 0.27);
+    }
+  } catch {
+    // no audio device
+  }
 }
 
 // ------------------------------------------------------------------ animation
@@ -144,28 +248,101 @@ function playOnce(name, loops = 1) {
   });
 }
 
+// ------------------------------------------------------------------ speech
+
+/** A short message from the pet. Sticky ones (alarms) stay until clicked. */
+function say(text, { duration = 6000, sticky = false } = {}) {
+  if (!text) return;
+  if (state.speech && state.speech.sticky && !sticky) return;
+  state.speech = { text, sticky, until: Date.now() + duration };
+  render();
+}
+
+function dismissSpeech() {
+  if (!state.speech) return;
+  state.speech = null;
+  render();
+}
+
+function digestSummary(counts) {
+  const parts = ['ready', 'waiting', 'failed']
+    .filter((k) => counts && counts[k] > 0)
+    .map((k) => t(`digest.${k}`, { n: counts[k] }));
+  return parts.join(t('digest.separator'));
+}
+
 // ------------------------------------------------------------------ rendering
 
 function applyI18n() {
   document.documentElement.lang = state.config.language;
   for (const node of document.querySelectorAll('[data-i18n]')) node.textContent = t(node.dataset.i18n);
-  ui.composerInput.placeholder = t('ui.quickPlaceholder');
+  for (const node of document.querySelectorAll('[data-i18n-title]')) node.title = t(node.dataset.i18nTitle);
+  renderComposerPlaceholder();
   ui.composerCwd.title = t('ui.cwd');
+  ui.bubblePause.title = t('ui.pause');
 }
 
-function renderBubble() {
+function permissionButtons(perm, className) {
+  const box = el('div', className);
+  box.appendChild(button(t('perm.allow'), () => api.answerPermission(perm.id, 'allow'), 'pill-button allow'));
+  box.appendChild(button(t('perm.deny'), () => api.answerPermission(perm.id, 'deny'), 'pill-button deny'));
+  box.appendChild(button(t('perm.terminal'), () => api.answerPermission(perm.id, null), 'text-button muted'));
+  const left = el('span', 'perm-left', t('perm.remaining', { n: Math.max(0, Math.ceil((perm.expiresAt - Date.now()) / 1000)) }));
+  left.dataset.expires = String(perm.expiresAt);
+  box.appendChild(left);
+  return box;
+}
+
+function renderSpeech() {
+  const sp = state.speech;
+  const visible = Boolean(sp) && (sp.sticky || (!state.panelOpen && !state.config.mini));
+  ui.speech.hidden = !visible;
+  if (visible) {
+    ui.speechText.textContent = sp.text;
+    ui.speech.classList.toggle('sticky', sp.sticky);
+  }
+  return visible;
+}
+
+function renderBubble(speechVisible) {
   const agg = state.aggregate;
   const s = agg.primary;
-  const show = state.config.showBubble && !state.config.mini && !state.panelOpen && s && agg.status !== 'idle';
+  const perm = s && s.effectiveStatus === 'waiting' ? pendingPermission(s.id) : null;
+  const show =
+    state.config.showBubble &&
+    !state.config.mini &&
+    !state.panelOpen &&
+    s &&
+    agg.status !== 'idle' &&
+    !held(agg.status) &&
+    (!speechVisible || Boolean(perm));
   ui.bubble.hidden = !show;
   if (!show) return;
   ui.bubble.className = `bubble status-${agg.status}`;
   const others = attentionCount() + (agg.counts.running || 0) - 1;
   ui.bubbleTitle.textContent = `${sessionName(s)} · ${activityText(s)}`;
+
+  if (isWorking(s)) {
+    ui.bubbleClock.dataset.since = String(s.turnStartedAt);
+    ui.bubbleClock.textContent = PetTime.formatClock(Date.now() - s.turnStartedAt);
+    ui.bubbleClock.hidden = false;
+  } else {
+    delete ui.bubbleClock.dataset.since;
+    ui.bubbleClock.hidden = true;
+  }
+  ui.bubblePause.hidden = !(s.effectiveStatus === 'running' && !s.pauseRequested && s.source !== 'quickchat');
+
   const detail = detailText(s);
   ui.bubbleSub.replaceChildren(document.createTextNode(detail));
   if (others > 0) ui.bubbleSub.appendChild(el('span', 'bubble-more', t('bubble.more', { n: others })));
   ui.bubbleSub.hidden = !ui.bubbleSub.textContent;
+
+  ui.bubbleActions.hidden = !perm;
+  if (perm) ui.bubbleActions.replaceChildren(permissionButtons(perm, 'perm-row'));
+
+  const progress = s.todoProgress && s.effectiveStatus !== 'idle' ? s.todoProgress : null;
+  ui.bubbleProgress.hidden = !progress;
+  if (progress) ui.bubbleProgressFill.style.width = `${(progress.done / progress.total) * 100}%`;
 }
 
 function renderBadge() {
@@ -177,6 +354,29 @@ function renderBadge() {
     badge.textContent = count > 9 ? '9+' : String(count);
     badge.className = `${badge === ui.miniBadge ? 'badge mini-badge' : 'badge'} status-${status}`;
   }
+}
+
+function moodIcon() {
+  const m = state.modes || {};
+  if (m.away) return ['💤', t('mode.away')];
+  if (m.dnd) return ['🔕', t('mode.dnd')];
+  if (m.focus) return ['🍅', t('mode.focus')];
+  if (state.mood.tired) return ['🔋', ''];
+  if (state.mood.night && state.config.greetings) return ['🌙', ''];
+  return ['', ''];
+}
+
+function renderMood() {
+  const [icon, title] = moodIcon();
+  for (const node of [ui.mood, ui.miniMood]) {
+    node.hidden = !icon;
+    node.textContent = icon;
+    node.title = title;
+  }
+  const calm = ['idle', 'ready'].includes(state.aggregate.status) && !state.chat.busy;
+  ui.stage.classList.toggle('sleeping', Boolean(state.modes.away) && calm);
+  ui.stage.classList.toggle('tired', state.mood.tired && !state.modes.away);
+  ui.stage.classList.toggle('sleepy', state.mood.night && state.config.greetings && !state.modes.away && calm);
 }
 
 function renderMini() {
@@ -191,17 +391,35 @@ function renderMini() {
     running > 1 && agg.status === 'running' ? `${t('status.running')} · ${running}` : t(`status.${agg.status}`);
 }
 
+function sessionMeta(s) {
+  const meta = el('div', 'session-meta');
+  if (isWorking(s)) {
+    const clock = el('span', 'chip', PetTime.formatClock(Date.now() - s.turnStartedAt));
+    clock.dataset.since = String(s.turnStartedAt);
+    meta.appendChild(clock);
+  } else if (s.lastDuration != null) {
+    meta.appendChild(el('span', 'chip', t('ui.took', { time: PetTime.formatSpan(s.lastDuration, state.config.language) })));
+  }
+  if (s.todoProgress) {
+    const chip = el('span', 'chip todo-chip', t('ui.todoProgress', { done: s.todoProgress.done, total: s.todoProgress.total }));
+    const bar = el('span', 'mini-bar');
+    const fill = el('span', 'mini-bar-fill');
+    fill.style.width = `${(s.todoProgress.done / s.todoProgress.total) * 100}%`;
+    bar.appendChild(fill);
+    chip.appendChild(bar);
+    meta.appendChild(chip);
+  }
+  if (s.files && s.files.length) meta.appendChild(el('span', 'chip', `📝 ${s.files.length}`));
+  return meta.children.length ? meta : null;
+}
+
 function sessionActions(s) {
   const actions = el('div', 'session-actions');
-  const add = (label, handler) => {
-    const b = el('button', 'text-button', label);
-    b.type = 'button';
-    b.addEventListener('click', (e) => {
-      e.stopPropagation();
-      handler(b);
-    });
-    actions.appendChild(b);
-  };
+  const add = (label, handler, className) => actions.appendChild(button(label, handler, className));
+  if (s.effectiveStatus === 'running' && s.source !== 'quickchat') {
+    if (s.pauseRequested) add(t('ui.cancelPause'), () => api.cancelPause(s.id));
+    else add(t('ui.pause'), () => api.pauseSession(s.id));
+  }
   if (s.unread || s.effectiveStatus === 'failed') add(t('ui.markRead'), () => api.markRead(s.id));
   add(t('ui.openTerminal'), async (b) => {
     b.disabled = true;
@@ -217,17 +435,47 @@ function sessionActions(s) {
   return actions;
 }
 
+function todoList(s) {
+  const box = el('div', 'session-section');
+  box.appendChild(el('div', 'section-title', `${t('ui.todos')} · ${s.todoProgress.done}/${s.todoProgress.total}`));
+  const list = el('ul', 'todo-list');
+  for (const todo of s.todos) {
+    const item = el('li', `todo status-${todo.status}`);
+    item.appendChild(el('span', 'todo-mark', todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '▶' : '○'));
+    item.appendChild(el('span', 'todo-text', todo.status === 'in_progress' && todo.active ? todo.active : todo.text));
+    list.appendChild(item);
+  }
+  box.appendChild(list);
+  return box;
+}
+
+function fileList(s) {
+  const box = el('div', 'session-section');
+  box.appendChild(el('div', 'section-title', t('ui.files', { n: s.files.length })));
+  const list = el('ul', 'file-list');
+  for (const file of s.files) {
+    const item = el('li', 'file');
+    const open = button('', () => api.openFile(s.id, file), 'file-open');
+    open.title = file;
+    open.appendChild(el('span', 'file-name', basename(file)));
+    const dir = dirname(file);
+    if (dir) open.appendChild(el('span', 'file-dir', dir));
+    item.appendChild(open);
+    const reveal = button('📂', () => api.openFile(s.id, file, true), 'icon-button small');
+    reveal.title = t('ui.revealFile');
+    item.appendChild(reveal);
+    list.appendChild(item);
+  }
+  box.appendChild(list);
+  return box;
+}
+
 function renderSessions() {
   const list = ui.sessionList;
   list.replaceChildren();
   const sessions = state.sessions;
   ui.sessionsEmpty.hidden = sessions.length > 0;
   ui.setupHint.hidden = state.hooksInstalled;
-
-  const count = attentionCount();
-  const c = state.aggregate.counts || {};
-  ui.sessionsCount.textContent = count ? String(count) : '';
-  ui.sessionsCount.className = `tab-count status-${c.waiting ? 'waiting' : c.failed ? 'failed' : 'ready'}`;
 
   for (const s of sessions) {
     const item = el('li', `session status-${s.effectiveStatus}`);
@@ -245,6 +493,8 @@ function renderSessions() {
     main.appendChild(name);
     const detail = detailText(s);
     main.appendChild(el('div', 'session-detail', detail ? `${activityText(s)} — ${detail}` : activityText(s)));
+    const meta = sessionMeta(s);
+    if (meta) main.appendChild(meta);
     row.appendChild(main);
     row.addEventListener('click', () => {
       state.expanded = expanded ? null : s.id;
@@ -253,8 +503,18 @@ function renderSessions() {
     });
     item.appendChild(row);
 
+    const perm = s.effectiveStatus === 'waiting' ? pendingPermission(s.id) : null;
+    if (perm && !expanded) item.appendChild(permissionButtons(perm, 'perm-row in-list'));
+
     if (expanded) {
       const body = el('div', 'session-body');
+      if (perm) {
+        const box = el('div', 'perm-box');
+        box.appendChild(el('div', 'section-title', t('perm.title')));
+        box.appendChild(el('div', 'perm-tool', perm.tool ? `${perm.toolName}: ${perm.tool}` : perm.toolName || ''));
+        box.appendChild(permissionButtons(perm, 'perm-row'));
+        body.appendChild(box);
+      }
       if (s.prompt) {
         const box = el('div', 'session-text');
         box.appendChild(el('span', 'who', t('ui.you')));
@@ -263,11 +523,13 @@ function renderSessions() {
       }
       const reply = s.message || s.detail;
       if (reply) {
-        const box = el('div', 'session-text');
+        const box = el('div', 'session-text rich');
         box.appendChild(el('span', 'who', t('ui.claude')));
-        box.appendChild(document.createTextNode(reply));
+        box.appendChild(s.message ? markdown(s.message) : document.createTextNode(reply));
         body.appendChild(box);
       }
+      if (s.todos && s.todos.length) body.appendChild(todoList(s));
+      if (s.files && s.files.length) body.appendChild(fileList(s));
       body.appendChild(sessionActions(s));
       item.appendChild(body);
     }
@@ -281,27 +543,62 @@ function renderChat() {
   log.replaceChildren();
   for (const m of state.chat.messages) {
     const bubble = el('div', `msg ${m.role}${m.pending ? ' pending' : ''}${m.error ? ' error' : ''}`);
-    const text = el('span', 'text', m.text);
-    text.dataset.placeholder = t('ui.waitingAnswer');
-    bubble.appendChild(text);
+    if (m.role === 'assistant' && m.text && !m.error) {
+      bubble.classList.add('rich');
+      bubble.appendChild(markdown(m.text));
+    } else {
+      const text = el('span', 'text', m.text);
+      text.dataset.placeholder = t('ui.waitingAnswer');
+      bubble.appendChild(text);
+    }
+    if (m.files && m.files.length) bubble.appendChild(el('span', 'msg-files', m.files.map((f) => `📎 ${f}`).join('  ')));
     if (m.pending && m.tool) bubble.appendChild(el('span', 'tool', `🔧 ${m.tool}`));
     log.appendChild(bubble);
   }
   if (!state.chat.messages.length) log.appendChild(el('p', 'empty', t('ui.quickPlaceholder')));
+  // `claude -p` asks through the same hook, so its permission requests can be answered here.
+  const perm = state.chat.sessionId ? pendingPermission(state.chat.sessionId) : null;
+  if (perm) {
+    const box = el('div', 'perm-box');
+    box.appendChild(el('div', 'section-title', t('perm.title')));
+    box.appendChild(el('div', 'perm-tool', perm.tool ? `${perm.toolName}: ${perm.tool}` : perm.toolName || ''));
+    box.appendChild(permissionButtons(perm, 'perm-row'));
+    log.appendChild(box);
+  }
   log.scrollTop = log.scrollHeight;
   ui.chatStop.hidden = !state.chat.busy;
+  const hasReply = state.chat.messages.some((m) => m.role === 'assistant' && m.text && !m.pending);
   $('chat-terminal').disabled = !state.chat.sessionId || state.chat.busy;
-  $('chat-copy').disabled = !state.chat.messages.some((m) => m.role === 'assistant' && m.text);
+  $('chat-copy').disabled = !hasReply;
+  $('chat-memo').disabled = !hasReply;
 }
 
 function renderPanel() {
   ui.panel.hidden = !state.panelOpen;
+  ui.timerDot.hidden = !PetTools.busy();
   if (!state.panelOpen) return;
   for (const tab of document.querySelectorAll('.tab')) tab.classList.toggle('active', tab.dataset.tab === state.tab);
   ui.tabSessions.hidden = state.tab !== 'sessions';
   ui.tabChat.hidden = state.tab !== 'chat';
+  ui.tabTools.hidden = !TOOL_TABS.has(state.tab);
+
+  const count = attentionCount();
+  const c = state.aggregate.counts || {};
+  ui.sessionsCount.textContent = count ? String(count) : '';
+  ui.sessionsCount.className = `tab-count status-${c.waiting ? 'waiting' : c.failed ? 'failed' : 'ready'}`;
+
   if (state.tab === 'sessions') renderSessions();
-  else renderChat();
+  else if (state.tab === 'chat') renderChat();
+  else PetTools.render(state.tab, ui.tabTools);
+}
+
+function renderComposerPlaceholder() {
+  const shot = state.attachments.some((a) => a.kind === 'screenshot');
+  ui.composerInput.placeholder = shot
+    ? t('ui.askAboutShot')
+    : state.attachments.length
+      ? t('ui.askAboutFile')
+      : t('ui.quickPlaceholder');
 }
 
 function renderComposer() {
@@ -310,12 +607,34 @@ function renderComposer() {
   const cwd = state.chat.cwd || state.config.quickChatCwd;
   ui.composerCwd.textContent = `📁 ${cwd === state.config.home ? '~' : basename(cwd)}`;
   ui.composerSend.disabled = state.chat.busy;
+
+  ui.composerFiles.hidden = !state.attachments.length;
+  ui.composerFiles.replaceChildren();
+  state.attachments.forEach((a, index) => {
+    const chip = el('span', 'attachment');
+    chip.title = a.path;
+    chip.appendChild(el('span', 'attachment-name', `${a.kind === 'screenshot' ? '🖼' : '📎'} ${a.name}`));
+    const remove = button(
+      '✕',
+      () => {
+        state.attachments.splice(index, 1);
+        render();
+      },
+      'attachment-remove',
+    );
+    remove.title = t('ui.removeAttachment');
+    chip.appendChild(remove);
+    ui.composerFiles.appendChild(chip);
+  });
+  renderComposerPlaceholder();
 }
 
 function render() {
   renderMini();
   renderBadge();
-  renderBubble();
+  renderMood();
+  const speechVisible = renderSpeech();
+  renderBubble(speechVisible);
   renderPanel();
   renderComposer();
   reportSize();
@@ -331,6 +650,126 @@ function reportSize() {
 }
 
 new ResizeObserver(reportSize).observe(ui.root);
+
+// ------------------------------------------------------------------ live clocks
+
+function tick() {
+  const now = Date.now();
+  for (const node of document.querySelectorAll('[data-since]')) {
+    const text = PetTime.formatClock(now - Number(node.dataset.since));
+    if (node.textContent !== text) node.textContent = text;
+  }
+  for (const node of document.querySelectorAll('[data-expires]')) {
+    node.textContent = t('perm.remaining', { n: Math.max(0, Math.ceil((Number(node.dataset.expires) - now) / 1000)) });
+  }
+  if (state.speech && !state.speech.sticky && state.speech.until <= now) dismissSpeech();
+  if (state.panelOpen && state.tab === 'timer') PetTools.tick(now);
+}
+
+// ------------------------------------------------------------------ greetings (time of day, battery, coming back)
+
+const greet = { morningDay: null, nightAt: 0, warned10: false };
+
+function storage(key, value) {
+  try {
+    if (value === undefined) return localStorage.getItem(key);
+    localStorage.setItem(key, value);
+  } catch {
+    // storage unavailable
+  }
+  return null;
+}
+
+function isMorning(hour) {
+  return hour >= 5 && hour < 11;
+}
+
+function isNight(hour) {
+  return hour >= 23 || hour < 5;
+}
+
+function checkTimeOfDay() {
+  const now = new Date();
+  const night = isNight(now.getHours());
+  if (night !== state.mood.night) {
+    state.mood.night = night;
+    renderMood();
+  }
+  if (!state.config.greetings || state.modes.away || state.modes.dnd || state.config.mini) return;
+  const day = now.toDateString();
+  if (greet.morningDay == null) greet.morningDay = storage('pet.morningDay');
+  if (isMorning(now.getHours()) && greet.morningDay !== day) {
+    greet.morningDay = day;
+    storage('pet.morningDay', day);
+    say(t('say.morning'), { duration: 7000 });
+    playOnce('waving', 2);
+  } else if (night && Date.now() - greet.nightAt > 60 * 60e3) {
+    greet.nightAt = Date.now();
+    say(t('say.night'), { duration: 9000 });
+  }
+}
+
+async function watchBattery() {
+  if (!navigator.getBattery) return;
+  let battery;
+  try {
+    battery = await navigator.getBattery();
+  } catch {
+    return;
+  }
+  const update = () => {
+    const level = Math.round(battery.level * 100);
+    const low = !battery.charging && level <= 20;
+    if (low && !state.mood.tired) {
+      state.mood.tired = true;
+      if (state.config.greetings) say(t('say.batteryLow', { level }), { duration: 9000 });
+    } else if (low && level <= 10 && !greet.warned10) {
+      greet.warned10 = true;
+      if (state.config.greetings) say(t('say.batteryLow', { level }), { duration: 9000 });
+    } else if (!low && state.mood.tired) {
+      state.mood.tired = false;
+      greet.warned10 = false;
+      if (battery.charging && state.config.greetings) say(t('say.charging'), { duration: 5000 });
+    }
+    renderMood();
+  };
+  battery.addEventListener('levelchange', update);
+  battery.addEventListener('chargingchange', update);
+  update();
+}
+
+function handleDigest(d) {
+  const summary = digestSummary(d.counts);
+  if (d.reason === 'away') {
+    if (!summary && !state.config.greetings) return;
+    const text = summary ? t('say.awaySummary', { summary }) : d.cause === 'sleep' ? t('say.resume') : t('say.welcomeBack');
+    say(text, { duration: summary ? 14000 : 6000 });
+    playOnce('waving', 2);
+    setTimeout(checkTimeOfDay, 7000); // good morning comes after "welcome back"
+  } else if (summary) {
+    say(t(d.reason === 'focus' ? 'say.focusSummary' : 'say.dndSummary', { summary }), { duration: 12000 });
+  }
+}
+
+function handleAlarm(a) {
+  if (a.kind === 'timer') {
+    say(a.label ? t('timer.doneLabel', { label: a.label }) : t('timer.done'), { sticky: true });
+    playOnce('jumping', 4);
+    beep(3);
+  } else if (a.kind === 'pomodoro') {
+    if (a.to === 'focus') say(t('pomo.focusStart', { min: a.minutes }), { duration: 7000 });
+    else if (a.to) say(t('pomo.breakStart', { min: a.minutes }), { duration: 10000 });
+    else say(t('pomo.finished'), { duration: 4000 });
+    if (a.from) {
+      playOnce(a.to === 'focus' ? 'waving' : 'jumping', 2);
+      beep(a.to === 'focus' ? 1 : 2);
+    }
+  } else if (a.kind === 'calendar') {
+    say(t('cal.reminder', { min: a.minutes, title: a.title || t('cal.untitled') }), { duration: 30000 });
+    playOnce('waving', 3);
+    beep(1);
+  }
+}
 
 // ------------------------------------------------------------------ panel & chat
 
@@ -370,17 +809,43 @@ function newChat() {
   openComposer();
 }
 
+/** Put text (a memo) into the quick chat composer, ready to edit and send. */
+function sendToChat(text, cwd) {
+  if (cwd && cwd !== (state.chat.cwd || state.config.quickChatCwd) && !state.chat.busy) {
+    state.chat = { messages: [], sessionId: null, cwd, busy: false };
+  }
+  ui.composerInput.value = text;
+  openPanel('chat');
+  openComposer();
+}
+
+function addAttachments(paths, kind) {
+  for (const p of paths) {
+    if (!p || state.attachments.some((a) => a.path === p) || state.attachments.length >= 10) continue;
+    state.attachments.push({ path: p, name: basename(p), kind });
+  }
+}
+
 async function sendQuick() {
-  const prompt = ui.composerInput.value.trim();
-  if (!prompt || state.chat.busy) return;
+  const typed = ui.composerInput.value.trim();
+  const attachments = state.attachments;
+  if ((!typed && !attachments.length) || state.chat.busy) return;
+  const shot = attachments.some((a) => a.kind === 'screenshot');
+  const prompt = typed || (shot ? t('ui.defaultShotPrompt') : t('ui.defaultFilePrompt'));
   ui.composerInput.value = '';
+  state.attachments = [];
   const chat = state.chat;
-  chat.messages.push({ role: 'user', text: prompt });
+  chat.messages.push({ role: 'user', text: prompt, files: attachments.map((a) => a.name) });
   chat.messages.push({ role: 'assistant', text: '', pending: true });
   chat.busy = true;
   openPanel('chat');
   playStatus();
-  const res = await api.quickSend(prompt, chat.cwd || state.config.quickChatCwd, chat.sessionId);
+  const res = await api.quickSend(
+    prompt,
+    chat.cwd || state.config.quickChatCwd,
+    chat.sessionId,
+    attachments.map((a) => a.path),
+  );
   if (!res.ok) handleQuickEvent({ type: 'error', message: res.error });
   else chat.cwd = res.cwd;
   render();
@@ -432,6 +897,51 @@ function handleQuickEvent(ev) {
   render();
 }
 
+// ------------------------------------------------------------------ drag & drop: feed the pet
+
+function setupDrop() {
+  let depth = 0;
+  const hasPayload = (e) =>
+    [...(e.dataTransfer ? e.dataTransfer.types : [])].some((type) => type === 'Files' || type === 'text/plain');
+  document.addEventListener('dragenter', (e) => {
+    if (!hasPayload(e)) return;
+    e.preventDefault();
+    depth += 1;
+    ui.stage.classList.add('drop-target');
+    ui.mini.classList.add('drop-target');
+  });
+  document.addEventListener('dragover', (e) => {
+    if (!hasPayload(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  document.addEventListener('dragleave', () => {
+    depth = Math.max(0, depth - 1);
+    if (!depth) {
+      ui.stage.classList.remove('drop-target');
+      ui.mini.classList.remove('drop-target');
+    }
+  });
+  document.addEventListener('drop', (e) => {
+    depth = 0;
+    ui.stage.classList.remove('drop-target');
+    ui.mini.classList.remove('drop-target');
+    const hasFiles = Boolean(e.dataTransfer.files && e.dataTransfer.files.length);
+    // Text dropped into a text field is just typed there.
+    if (!hasFiles && (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement)) return;
+    e.preventDefault();
+    const files = [...(e.dataTransfer.files || [])].map((f) => api.pathForFile(f)).filter(Boolean);
+    const text = files.length ? '' : (e.dataTransfer.getData('text/plain') || '').trim();
+    if (!files.length && !text) return;
+    if (files.length) addAttachments(files, 'file');
+    if (text) ui.composerInput.value = ui.composerInput.value ? `${ui.composerInput.value}\n\n${text}` : text;
+    if (!state.config.mini) playOnce('jumping', 1);
+    say(t('say.fed'), { duration: 3000 });
+    openPanel('chat');
+    openComposer();
+  });
+}
+
 // ------------------------------------------------------------------ pointer: click vs drag
 
 function setupPointer(target) {
@@ -481,6 +991,10 @@ function setupPointer(target) {
       playStatus();
       return;
     }
+    if (state.speech && state.speech.sticky) {
+      dismissSpeech();
+      return;
+    }
     if (!state.config.mini) playOnce('waving', 2);
     togglePanel();
   };
@@ -497,10 +1011,19 @@ function setupPointer(target) {
 function setupControls() {
   setupPointer(ui.stage);
   setupPointer(ui.mini);
+  setupDrop();
   ui.bubble.addEventListener('click', () => openPanel('sessions'));
-  ui.bubble.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    api.contextMenu();
+  ui.speech.addEventListener('click', dismissSpeech);
+  for (const node of [ui.bubble, ui.speech]) {
+    node.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      api.contextMenu();
+    });
+  }
+  ui.bubblePause.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const s = state.aggregate.primary;
+    if (s) api.pauseSession(s.id);
   });
   $('panel-close').addEventListener('click', closePanel);
   for (const tab of document.querySelectorAll('.tab')) {
@@ -519,6 +1042,16 @@ function setupControls() {
     if (reply) api.copy(reply.text);
     e.currentTarget.textContent = t('ui.copied');
     setTimeout(() => applyI18n(), 1200);
+  });
+  $('chat-memo').addEventListener('click', async (e) => {
+    const reply = lastAssistant();
+    if (!reply || !reply.text) return;
+    const target = e.currentTarget;
+    const res = await api.memo({ action: 'add', text: reply.text, cwd: state.chat.cwd || null });
+    if (res && res.ok) {
+      target.textContent = t('ui.saved');
+      setTimeout(() => applyI18n(), 1200);
+    }
   });
   $('chat-terminal').addEventListener('click', async () => {
     if (state.chat.sessionId) await api.openTerminal(state.chat.sessionId, state.chat.cwd);
@@ -546,18 +1079,23 @@ function setupControls() {
 
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    if (state.composerOpen) closeComposer();
+    if (state.speech && state.speech.sticky) dismissSpeech();
+    else if (state.composerOpen) closeComposer();
     else if (state.panelOpen) closePanel();
   });
 
+  setInterval(tick, 1000);
   setInterval(() => {
     if (state.panelOpen && state.tab === 'sessions') renderSessions();
   }, 30000);
+  setInterval(checkTimeOfDay, 60000);
 }
 
-function applyState({ sessions, aggregate }) {
+function applyState({ sessions, aggregate, permissions, modes }) {
   state.sessions = sessions;
   state.aggregate = aggregate;
+  state.permissions = permissions || [];
+  state.modes = modes || { dnd: null, focus: false, away: false };
   if (state.expanded && !sessions.some((s) => s.id === state.expanded)) state.expanded = null;
   playStatus();
   render();
@@ -573,9 +1111,28 @@ function applyConfig(config) {
   render();
 }
 
+function toolsChanged(tab) {
+  if (state.panelOpen && state.tab === tab) renderPanel();
+  else ui.timerDot.hidden = !PetTools.busy();
+  reportSize();
+}
+
 async function boot() {
   const init = await api.init();
   state.hooksInstalled = init.hooksInstalled;
+  PetTools.init({
+    api,
+    t: () => t,
+    language: () => state.config.language,
+    locale,
+    sendToChat,
+    copy: (text) => api.copy(text),
+    rerender: () => renderPanel(),
+    reportSize,
+  });
+  PetTools.setTimers(init.timers);
+  PetTools.setMemos(init.memos);
+  PetTools.setCalendar(init.calendar);
   applyConfig(init.config);
   state.pet = init.pet;
   sprite.setPet(init.pet, init.config.scale);
@@ -590,8 +1147,8 @@ async function boot() {
     playOnce('waving', 2);
     render();
   });
-  api.on('transition', ({ to, session }) => {
-    if (to === 'ready' && session.source !== 'quickchat') playOnce('jumping', 2);
+  api.on('transition', ({ to, session, held: isHeld }) => {
+    if (to === 'ready' && session.source !== 'quickchat' && !isHeld) playOnce('jumping', 2);
   });
   api.on('command', (cmd) => {
     if (cmd.type === 'panel') openPanel(cmd.tab);
@@ -601,7 +1158,30 @@ async function boot() {
     }
   });
   api.on('quick-event', handleQuickEvent);
+  api.on('timers', (snapshot) => {
+    PetTools.setTimers(snapshot);
+    toolsChanged('timer');
+  });
+  api.on('memos', (list) => {
+    PetTools.setMemos(list);
+    toolsChanged('memo');
+  });
+  api.on('calendar', (snapshot) => {
+    PetTools.setCalendar(snapshot);
+    toolsChanged('calendar');
+  });
+  api.on('alarm', handleAlarm);
+  api.on('digest', handleDigest);
+  api.on('say', ({ text }) => say(text, { duration: 9000 }));
+  api.on('attach', ({ files, kind }) => {
+    addAttachments(files || [], kind === 'screenshot' ? 'screenshot' : 'file');
+    openPanel('chat');
+    openComposer();
+  });
+
   playOnce('waving', 2);
+  checkTimeOfDay();
+  watchBattery();
 }
 
 boot();

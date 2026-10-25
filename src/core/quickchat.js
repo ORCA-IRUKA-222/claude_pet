@@ -8,13 +8,53 @@ const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const fs = require('fs');
 const os = require('os');
+const path = require('path');
 const { cleanEnv } = require('../shared/env');
 
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9-]{7,}$/;
 const PERMISSION_MODES = new Set(['default', 'plan', 'acceptEdits', 'auto', 'dontAsk', 'bypassPermissions']);
 const MODEL = /^[\w.:[\]-]+$/;
+const SHELL_UNSAFE = /["%!^&|<>\r\n]/; // Windows runs claude.cmd through cmd.exe
+const MAX_ATTACHMENTS = 10;
 
-function buildArgs({ resume, permissionMode, model }) {
+/** Files dropped on the pet (or a screenshot): existing absolute paths only. */
+function validAttachments(files, { platform = process.platform } = {}) {
+  if (!Array.isArray(files)) return [];
+  const out = [];
+  for (const file of files) {
+    if (typeof file !== 'string' || !path.isAbsolute(file) || out.includes(file)) continue;
+    if (platform === 'win32' && SHELL_UNSAFE.test(file)) continue;
+    try {
+      const stat = fs.statSync(file);
+      if (!stat.isFile() && !stat.isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    out.push(file);
+    if (out.length >= MAX_ATTACHMENTS) break;
+  }
+  return out;
+}
+
+/** The prompt with the attached paths listed, and the folders Claude must be allowed to read. */
+function withAttachments(prompt, files, heading = 'Attached files') {
+  if (!files.length) return { prompt, addDirs: [] };
+  const list = files.map((f) => `- ${f}`).join('\n');
+  const addDirs = [
+    ...new Set(
+      files.map((f) => {
+        try {
+          return fs.statSync(f).isDirectory() ? f : path.dirname(f);
+        } catch {
+          return path.dirname(f);
+        }
+      }),
+    ),
+  ];
+  return { prompt: `${prompt}\n\n${heading}:\n${list}`, addDirs };
+}
+
+function buildArgs({ resume, permissionMode, model, addDirs = [] }) {
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
   if (resume) {
     if (!SESSION_ID.test(resume)) throw new Error('invalid session id');
@@ -27,6 +67,10 @@ function buildArgs({ resume, permissionMode, model }) {
   if (model) {
     if (!MODEL.test(model)) throw new Error('invalid model');
     args.push('--model', model);
+  }
+  for (const dir of addDirs) {
+    if (!path.isAbsolute(dir) || SHELL_UNSAFE.test(dir)) throw new Error('invalid folder');
+    args.push('--add-dir', process.platform === 'win32' ? `"${dir}"` : dir);
   }
   return args;
 }
@@ -65,11 +109,11 @@ class QuickChat extends EventEmitter {
     return Boolean(this.child);
   }
 
-  send({ prompt, cwd, resume }) {
+  send({ prompt, cwd, resume, addDirs = [] }) {
     if (this.child) throw new Error('busy');
     if (!prompt || !String(prompt).trim()) throw new Error('empty prompt');
     const dir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
-    const args = buildArgs({ resume, permissionMode: this.permissionMode, model: this.model });
+    const args = buildArgs({ resume, permissionMode: this.permissionMode, model: this.model, addDirs });
 
     // npm installs `claude.cmd` on Windows, which needs a shell. Arguments are validated above.
     const useShell = process.platform === 'win32';
@@ -132,4 +176,4 @@ class QuickChat extends EventEmitter {
   }
 }
 
-module.exports = { QuickChat, buildArgs, parseLine, SESSION_ID };
+module.exports = { QuickChat, buildArgs, parseLine, validAttachments, withAttachments, SESSION_ID };

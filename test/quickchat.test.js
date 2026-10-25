@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { QuickChat, buildArgs, parseLine } = require('../src/core/quickchat');
+const { QuickChat, buildArgs, parseLine, validAttachments, withAttachments } = require('../src/core/quickchat');
 const { tempDir } = require('./helpers');
 
 test('buildArgs validates everything that reaches the command line', () => {
@@ -103,4 +103,20 @@ test('QuickChat reports a missing claude binary', async () => {
   chat.send({ prompt: 'hello' });
   const events = await pending;
   assert.ok(events.some((e) => e.type === 'error'));
+});
+
+test('attachments: only existing absolute paths, listed in the prompt with their folders allowed', () => {
+  const dir = tempDir();
+  const file = path.join(dir, 'shot.png');
+  fs.writeFileSync(file, 'png');
+  const files = validAttachments([file, file, 'relative.txt', path.join(dir, 'missing.txt'), 42]);
+  assert.deepEqual(files, [file]);
+  assert.deepEqual(validAttachments([path.join(dir, 'a"b.txt')], { platform: 'win32' }), []);
+
+  const { prompt, addDirs } = withAttachments('What is this?', files, '添付ファイル');
+  assert.equal(prompt, `What is this?\n\n添付ファイル:\n- ${file}`);
+  assert.deepEqual(addDirs, [dir]);
+  assert.deepEqual(buildArgs({ addDirs }).slice(-2), ['--add-dir', dir]);
+  assert.throws(() => buildArgs({ addDirs: ['relative'] }), /folder/);
+  assert.deepEqual(withAttachments('hi', []), { prompt: 'hi', addDirs: [] });
 });

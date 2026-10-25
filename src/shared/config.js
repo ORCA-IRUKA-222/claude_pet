@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -28,6 +29,7 @@ const DEFAULTS = {
   shortcuts: {
     toggle: 'CommandOrControl+Alt+P',
     quickChat: 'CommandOrControl+Alt+C',
+    screenshot: 'CommandOrControl+Alt+S',
   },
   quickChat: {
     cwd: null, // defaults to the home directory
@@ -36,8 +38,36 @@ const DEFAULTS = {
   },
   claudePath: null, // defaults to `claude` on PATH
   terminalCommand: null, // e.g. "wezterm start --cwd {cwd} -- {command}"
+  editorCommand: null, // e.g. "code -g {file}"; defaults to VS Code / Cursor if found, else the file manager
   staleMinutes: 30,
+  permissionPrompt: {
+    enabled: true, // answer Claude Code's permission prompts from the pet
+    timeoutSeconds: 120, // after this the prompt is left to the terminal
+  },
+  pomodoro: {
+    focusMinutes: 25,
+    breakMinutes: 5,
+    longBreakMinutes: 15,
+    longBreakEvery: 4,
+    autoStart: true,
+  },
+  calendar: {
+    url: null, // an iCal (.ics) URL, e.g. Google Calendar's secret address in iCal format
+    remindMinutes: 5,
+    refreshMinutes: 15,
+  },
+  dnd: { active: false, until: null, allowWaiting: true },
+  awayMinutes: 5,
+  greetings: true, // greetings by time of day, battery and sleep
 };
+
+const PERMISSION_TIMEOUT_MAX = 600;
+
+function permissionTimeoutMs(config) {
+  const seconds = Number(config && config.permissionPrompt && config.permissionPrompt.timeoutSeconds);
+  const valid = Number.isFinite(seconds) && seconds > 0 ? seconds : DEFAULTS.permissionPrompt.timeoutSeconds;
+  return Math.min(valid, PERMISSION_TIMEOUT_MAX) * 1000;
+}
 
 function configPath() {
   return path.join(homeDir(), 'config.json');
@@ -81,10 +111,34 @@ function getPort() {
   return Number.isInteger(fromFile) && fromFile > 0 ? fromFile : DEFAULT_PORT;
 }
 
+// A random secret shared by the pet and its hooks (see core/permissions.js).
+function secretPath() {
+  return path.join(homeDir(), 'secret');
+}
+
+function readSecret() {
+  try {
+    const secret = fs.readFileSync(secretPath(), 'utf8').trim();
+    return /^[0-9a-f]{64}$/.test(secret) ? secret : null;
+  } catch {
+    return null;
+  }
+}
+
+function ensureSecret() {
+  const existing = readSecret();
+  if (existing) return existing;
+  fs.mkdirSync(homeDir(), { recursive: true });
+  const secret = crypto.randomBytes(32).toString('hex');
+  fs.writeFileSync(secretPath(), secret + '\n', { mode: 0o600 });
+  return secret;
+}
+
 module.exports = {
   APP_ROOT,
   DEFAULTS,
   DEFAULT_PORT,
+  PERMISSION_TIMEOUT_MAX,
   homeDir,
   claudeDir,
   configPath,
@@ -93,4 +147,8 @@ module.exports = {
   getPort,
   merge,
   readJSON,
+  permissionTimeoutMs,
+  secretPath,
+  readSecret,
+  ensureSecret,
 };

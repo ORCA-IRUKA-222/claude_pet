@@ -26,11 +26,21 @@ test('install keeps existing settings and hooks', () => {
   for (const event of installer.STATUS_EVENTS) {
     const ours = settings.hooks[event]
       .flatMap((g) => g.hooks)
-      .filter((h) => (h.args || []).some((a) => a.endsWith('pet-hook.js')));
+      .filter((h) => (h.args || []).some((a) => a.endsWith('pet-hook.js')) && !h.args.includes('--gate'));
     assert.equal(ours.length, 1, event);
     assert.equal(Boolean(ours[0].async), installer.ASYNC_EVENTS.has(event), event);
     assert.equal(ours[0].command, '/opt/node/bin/node');
   }
+  const gates = Object.entries(settings.hooks).flatMap(([event, groups]) =>
+    groups.flatMap((g) => g.hooks.filter((h) => (h.args || []).includes('--gate')).map((h) => ({ event, ...h }))),
+  );
+  assert.equal(gates.length, 1);
+  assert.equal(gates[0].event, 'PreToolUse');
+  assert.ok(!gates[0].async, 'the pause gate must be synchronous to stop Claude');
+  const permission = settings.hooks.PermissionRequest.flatMap((g) => g.hooks).find((h) =>
+    (h.args || []).some((a) => a.endsWith('pet-hook.js')),
+  );
+  assert.ok(permission.timeout > 600, 'the permission hook waits for the pet');
   const expansion = settings.hooks.UserPromptExpansion[0];
   assert.equal(expansion.matcher, 'pet');
   assert.ok(!expansion.hooks[0].async, '/pet must be synchronous to block the expansion');

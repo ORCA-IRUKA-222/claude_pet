@@ -6,6 +6,7 @@ const fs = require('fs');
 const { APP_ROOT, loadConfig, saveConfig } = require('../src/shared/config');
 const { translator } = require('../src/shared/i18n');
 const { cleanEnv } = require('../src/shared/env');
+const { parseDuration, formatSpan } = require('../src/shared/time');
 const client = require('../src/core/client');
 
 const HELP = `claude-pet — Claude Code のデスクトップペット
@@ -17,6 +18,12 @@ const HELP = `claude-pet — Claude Code のデスクトップペット
   claude-pet chat                クイックチャットを開く
   claude-pet quit                終了
   claude-pet status              セッションの状態を表示
+  claude-pet timer <時間> [名前]  タイマーを開始（例: 10m, 1h30m, 5:00）。timer stop で止める
+  claude-pet pomo [start | stop | skip]
+                                 ポモドーロタイマー
+  claude-pet memo <内容>          メモを追加（今のフォルダのプロジェクト名が付きます）
+  claude-pet dnd [時間 | off]     おやすみモード（時間なしは解除するまで）
+  claude-pet shot                スクリーンショットを撮ってクイックチャットで質問
   claude-pet setup               Claude Code にフックと /pet, /hatch-pet を登録
   claude-pet uninstall           登録を解除
   claude-pet pets                使えるペットの一覧
@@ -63,13 +70,82 @@ async function start({ wait = true } = {}) {
   return 'starting';
 }
 
+/** Start the pet if needed and wait for it: timers and おやすみモード live in the app. */
+async function ensureRunning(running) {
+  if (running) return;
+  launchApp();
+  if (!(await waitUntilRunning(10000))) throw new Error('ペットの起動を確認できませんでした');
+}
+
+function clockText(ts, language) {
+  return new Date(ts).toLocaleTimeString(language === 'en' ? 'en-US' : 'ja-JP', { hour: '2-digit', minute: '2-digit' });
+}
+
 /** Run a pet command and return a short message for the user. */
-async function runPetCommand(args, { wait = true } = {}) {
-  const t = translator(loadConfig().language);
+async function runPetCommand(args, { wait = true, cwd = process.cwd() } = {}) {
+  const config = loadConfig();
+  const t = translator(config.language);
   const [action = 'toggle', ...rest] = args;
   const running = await client.isRunning();
 
   switch (action) {
+    case 'timer': {
+      const [first = '', ...label] = rest;
+      if (['stop', 'off', 'cancel', 'reset'].includes(first)) {
+        if (!running) return t('cli.notRunning');
+        await client.control('timer', { command: 'reset' });
+        return t('cli.timerStopped');
+      }
+      const ms = parseDuration(first);
+      if (!ms) return t('cli.badDuration');
+      await ensureRunning(running);
+      await client.control('timer', { command: 'start', ms, label: label.join(' ') });
+      return t('cli.timerStarted', { time: formatSpan(ms, config.language) });
+    }
+    case 'pomo':
+    case 'pomodoro': {
+      const sub = rest[0] || 'start';
+      if (sub === 'stop' || sub === 'off' || sub === 'skip') {
+        if (!running) return t('cli.notRunning');
+        await client.control('timer', { command: sub === 'skip' ? 'pomo-skip' : 'pomo-stop' });
+        return sub === 'skip' ? t('cli.pomoSkipped') : t('cli.pomoStopped');
+      }
+      await ensureRunning(running);
+      const res = await client.control('timer', { command: 'pomo-start' });
+      return t('cli.pomoStarted', { focus: res.timers.pomodoro.settings.focusMinutes });
+    }
+    case 'memo': {
+      const text = rest.join(' ').trim();
+      if (!text) return t('cli.needText');
+      if (running) await client.control('memo-add', { text, cwd });
+      else new (require('../src/core/memos').MemoStore)().add({ text, cwd });
+      return t('cli.memoAdded', { text: text.length > 60 ? `${text.slice(0, 59)}…` : text });
+    }
+    case 'dnd': {
+      const arg = rest[0] || '';
+      if (arg === 'off') {
+        if (!running) return t('cli.dndOff');
+        await client.control('dnd', { off: true });
+        return t('cli.dndOff');
+      }
+      let minutes = null;
+      if (arg && arg !== 'on') {
+        const ms = parseDuration(arg);
+        if (!ms) return t('cli.badDuration');
+        minutes = ms / 60e3;
+      }
+      await ensureRunning(running);
+      const res = await client.control('dnd', { minutes });
+      return t('cli.dndOn', {
+        until:
+          res.dnd && res.dnd.until ? t('cli.dndUntil', { time: clockText(res.dnd.until, config.language) }) : t('cli.dndForever'),
+      });
+    }
+    case 'shot':
+    case 'screenshot':
+      await ensureRunning(running);
+      await client.control('screenshot');
+      return t('cli.shown');
     case 'toggle': {
       if (!running) {
         await start({ wait });
@@ -161,7 +237,7 @@ async function slashHook() {
       .trim()
       .split(/\s+/)
       .filter(Boolean);
-    reason = await runPetCommand(args, { wait: false });
+    reason = await runPetCommand(args, { wait: false, cwd: input.cwd || process.cwd() });
   } catch (err) {
     reason = `🐾 ${err.message}`;
   }
@@ -197,6 +273,13 @@ async function main(argv) {
     case 'chat':
     case 'quit':
     case 'use':
+    case 'timer':
+    case 'pomo':
+    case 'pomodoro':
+    case 'memo':
+    case 'dnd':
+    case 'shot':
+    case 'screenshot':
       console.log(await runPetCommand([command, ...args]));
       break;
     case 'pet':

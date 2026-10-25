@@ -45,3 +45,27 @@ test('help prints usage', () => {
   assert.equal(result.status, 0);
   assert.match(result.stdout.toString(), /claude-pet setup/);
 });
+
+test('/pet memo works without the pet running and keeps the project', async () => {
+  const fs = require('fs');
+  const home = tempDir();
+  const port = await freePort();
+  const result = spawnSync(process.execPath, [CLI, 'slash-hook'], {
+    input: JSON.stringify({ command_name: 'pet', command_args: 'memo write the release notes', cwd: '/work/my-app' }),
+    env: { ...process.env, CLAUDE_PET_PORT: String(port), CLAUDE_PET_HOME: home },
+  });
+  assert.match(JSON.parse(result.stdout.toString()).reason, /メモしました/);
+  const saved = JSON.parse(fs.readFileSync(path.join(home, 'memos.json'), 'utf8')).memos;
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].text, 'write the release notes');
+  assert.equal(saved[0].project, 'my-app');
+});
+
+test('/pet timer and /pet dnd reject times they cannot read', async () => {
+  const timer = await slashHook({ command_name: 'pet', command_args: 'timer soon' });
+  assert.match(JSON.parse(timer.stdout).reason, /時間の書き方/);
+  const dnd = await slashHook({ command_name: 'pet', command_args: 'dnd later' });
+  assert.match(JSON.parse(dnd.stdout).reason, /時間の書き方/);
+  const memo = await slashHook({ command_name: 'pet', command_args: 'memo' });
+  assert.match(JSON.parse(memo.stdout).reason, /メモの内容/);
+});
