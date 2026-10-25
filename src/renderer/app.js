@@ -87,7 +87,9 @@ function timeAgo(ms) {
 }
 
 function sessionName(s) {
-  return s.title || s.project || s.id.slice(0, 8);
+  // quick chats all run in the same folder, so their question tells them apart
+  const asked = s.source === 'quickchat' && s.prompt ? s.prompt.replace(/\s+/g, ' ').slice(0, 40) : null;
+  return s.title || asked || s.project || s.id.slice(0, 8);
 }
 
 function activityText(s) {
@@ -231,6 +233,8 @@ function sessionActions(s) {
   // cloud sessions and browser chats live on claude.ai, not on this computer
   if (s.url) add(t('ui.openInBrowser'), () => api.openUrl(s.url));
   else {
+    if (s.effectiveStatus !== 'running' && s.effectiveStatus !== 'waiting') add(t('ui.continueHere'), () => continueInChat(s.id));
+    add(t('ui.openInApp'), () => openInApp(s.id, s.cwd));
     add(t('ui.openTerminal'), async (b) => {
       b.disabled = true;
       const res = await api.openTerminal(s.id, s.cwd);
@@ -320,6 +324,9 @@ function renderChat() {
   log.scrollTop = log.scrollHeight;
   ui.chatStop.hidden = !state.chat.busy;
   $('chat-terminal').disabled = state.chat.busy;
+  $('chat-app').disabled = !state.chat.sessionId || state.chat.busy;
+  $('chat-app').title = t('ui.openInApp');
+  $('chat-terminal').title = t('ui.openTerminal');
   $('chat-copy').disabled = !state.chat.messages.some((m) => m.role === 'assistant' && m.text);
 }
 
@@ -392,6 +399,23 @@ function openComposer() {
 function closeComposer() {
   state.composerOpen = false;
   render();
+}
+
+/** Load a past conversation into the quick chat; what you send next continues it. */
+async function continueInChat(id) {
+  if (state.chat.sessionId !== id) {
+    if (state.chat.busy) return showToast(t('ui.chatBusy'));
+    const res = await api.openChat(id);
+    if (!res.ok) return showToast(t('ui.chatNotFound'), res.error);
+    state.chat = { messages: res.messages, sessionId: id, cwd: res.cwd || state.chat.cwd, busy: false };
+  }
+  openPanel('chat');
+  openComposer();
+}
+
+async function openInApp(id, cwd) {
+  const res = await api.openDesktop(id, cwd);
+  if (!res.ok) showToast(t('ui.appFailed'), res.error);
 }
 
 function newChat() {
@@ -553,8 +577,9 @@ function setupControls() {
     e.currentTarget.textContent = t('ui.copied');
     setTimeout(() => applyI18n(), 1200);
   });
+  $('chat-app').addEventListener('click', () => openInApp(state.chat.sessionId, state.chat.cwd));
   $('chat-terminal').addEventListener('click', async () => {
-    // without a session yet, a new conversation starts in the chosen folder
+    // continues this chat in Claude Code; before the first reply, a new one starts in the chosen folder
     const res = await api.openTerminal(state.chat.sessionId || null, state.chat.cwd || state.config.quickChatCwd);
     if (!res.ok) showToast(t('ui.terminalFailed'), res.error);
   });

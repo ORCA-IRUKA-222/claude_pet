@@ -267,7 +267,9 @@ class SessionTracker extends EventEmitter {
     let added = false;
     for (const h of list || []) {
       if (!h || !h.id || this.sessions.has(h.id)) continue;
-      const s = newSession(h.id, h.cwd, h.updatedAt, { history: true });
+      // `claude -p` runs (entrypoint sdk-cli) are the pet's quick chats
+      const source = h.entrypoint === 'sdk-cli' ? 'quickchat' : 'cli';
+      const s = newSession(h.id, h.cwd, h.updatedAt, { history: true, source, entrypoint: h.entrypoint || null });
       Object.assign(s, { title: h.title || null, prompt: h.prompt || null, message: h.message || null });
       this.sessions.set(h.id, s);
       added = true;

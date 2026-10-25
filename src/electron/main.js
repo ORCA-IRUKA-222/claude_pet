@@ -24,9 +24,9 @@ const { SessionTracker } = require('../core/sessions');
 const { startServer } = require('../core/server');
 const { listPets, findPet } = require('../core/pets');
 const { QuickChat } = require('../core/quickchat');
-const { recentSessions } = require('../core/history');
+const { recentSessions, findTranscript, readConversation } = require('../core/history');
 const rotation = require('../core/rotation');
-const { openInTerminal } = require('../core/terminal');
+const { openInTerminal, openInDesktop } = require('../core/terminal');
 const installer = require('../core/installer');
 const autostart = require('../core/autostart');
 const { findClaude, isClaudeExecutable } = require('../core/claude-path');
@@ -584,6 +584,22 @@ function registerIpc() {
   ipcMain.on('open-url', (_e, url) => {
     // only conversations on claude.ai: cloud sessions and browser chats
     if (typeof url === 'string' && /^https:\/\/claude\.ai\/[\w/.-]*$/.test(url)) shell.openExternal(url);
+  });
+
+  ipcMain.handle('open-desktop', async (_e, { sessionId, cwd }) => {
+    try {
+      await openInDesktop({ sessionId, cwd, claudePath: claudeCommand(), template: config.terminalCommand });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  // a past conversation, to continue it in the quick chat
+  ipcMain.handle('open-chat', (_e, sessionId) => {
+    const file = findTranscript(String(sessionId || ''));
+    if (!file) return { ok: false, error: t('ui.chatNotFound') };
+    return { ok: true, sessionId, ...readConversation(file) };
   });
 
   ipcMain.handle('open-terminal', async (_e, { sessionId, cwd }) => {

@@ -8,6 +8,7 @@ const path = require('path');
 const { claudeDir } = require('../shared/config');
 
 const TAIL_BYTES = 512 * 1024;
+const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9-]{7,}$/;
 const NOISE = /^(\[Image[: ]|Stop hook feedback|Caveat:|<command-|<local-command|<system-reminder>|<bash-|<task-notification)/;
 
 function readTail(file, bytes = TAIL_BYTES) {
@@ -119,6 +120,49 @@ function transcriptFiles() {
   return files.sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
+/** A session's transcript file, or null. */
+function findTranscript(sessionId) {
+  if (!SESSION_ID.test(String(sessionId || ''))) return null;
+  const root = path.join(claudeDir(), 'projects');
+  let dirs = [];
+  try {
+    dirs = fs.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory());
+  } catch {
+    return null;
+  }
+  for (const dir of dirs) {
+    const file = path.join(root, dir.name, `${sessionId}.jsonl`);
+    if (fs.existsSync(file)) return file;
+  }
+  return null;
+}
+
+/** The conversation as user / assistant messages (the latest `limit`), for the quick chat. */
+function readConversation(file, { limit = 60 } = {}) {
+  const messages = [];
+  let cwd = null;
+  for (const line of readTail(file, 4 * TAIL_BYTES).split('\n')) {
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (typeof entry.cwd === 'string') cwd = entry.cwd;
+    if (isHumanPrompt(entry)) {
+      messages.push({ role: 'user', text: textOf(entry.message.content).trim() });
+    } else if (entry.type === 'assistant' && !entry.isSidechain && entry.message) {
+      const text = textOf(entry.message.content).trim();
+      if (!text) continue;
+      // one reply is written as several entries around its tool calls
+      const previous = messages[messages.length - 1];
+      if (previous && previous.role === 'assistant') previous.text += `\n\n${text}`;
+      else messages.push({ role: 'assistant', text });
+    }
+  }
+  return { cwd, messages: messages.slice(-limit) };
+}
+
 /** Recent sessions, newest first. */
 function recentSessions({ maxAgeMs = 7 * 24 * 3600e3, limit = 20, now = Date.now() } = {}) {
   const sessions = [];
@@ -131,4 +175,4 @@ function recentSessions({ maxAgeMs = 7 * 24 * 3600e3, limit = 20, now = Date.now
   return sessions;
 }
 
-module.exports = { recentSessions, readSession, transcriptFiles, isHumanPrompt };
+module.exports = { recentSessions, readSession, transcriptFiles, findTranscript, readConversation, isHumanPrompt };

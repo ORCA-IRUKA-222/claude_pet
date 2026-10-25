@@ -42,6 +42,7 @@ const HELP = `claude-pet — Claude Code のデスクトップペット
 
 const ENTRYPOINTS = {
   cli: 'ターミナル（CLI）',
+  'sdk-cli': 'claude -p（ペットのクイックチャットなど）',
   'claude-desktop': 'Claude デスクトップアプリ',
   'claude-vscode': 'VS Code 拡張',
   remote: 'クラウド',

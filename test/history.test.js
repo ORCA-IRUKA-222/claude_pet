@@ -8,7 +8,7 @@ const { tempDir } = require('./helpers');
 
 const claudeDir = tempDir();
 process.env.CLAUDE_CONFIG_DIR = claudeDir;
-const { recentSessions, readSession } = require('../src/core/history');
+const { recentSessions, readSession, findTranscript, readConversation } = require('../src/core/history');
 const { SessionTracker } = require('../src/core/sessions');
 
 function writeTranscript(project, id, entries, mtime) {
@@ -94,4 +94,37 @@ test('seeded history is idle, survives pruning, and never overwrites a live sess
 
   tracker.handle({ session_id: 'past', cwd: '/w/past', event: 'UserPromptSubmit', ts: 2 });
   assert.equal(tracker.list().find((s) => s.id === 'past').history, false);
+});
+
+test('a past conversation reads back as user / assistant messages for the quick chat', () => {
+  writeTranscript('-w-chat', 'ffff-6666', [
+    user('READMEを直して', { origin: { kind: 'human' }, cwd: '/w/chat' }),
+    assistant([
+      { type: 'text', text: '確認します。' },
+      { type: 'tool_use', id: 't', name: 'Read', input: {} },
+    ]),
+    user([{ type: 'tool_result', tool_use_id: 't', content: '...' }]),
+    assistant([{ type: 'text', text: '直しました。' }]),
+    assistant([{ type: 'text', text: '別の流れ' }], { isSidechain: true }),
+    user('ありがとう', { origin: { kind: 'human' } }),
+    assistant([{ type: 'text', text: 'どういたしまして。' }]),
+  ]);
+  const file = findTranscript('ffff-6666');
+  assert.ok(file && file.endsWith('ffff-6666.jsonl'));
+  assert.equal(findTranscript('../etc/passwd'), null);
+  assert.equal(findTranscript('0000-0000-none'), null);
+  const { cwd, messages } = readConversation(file);
+  assert.equal(cwd, '/w/app');
+  assert.deepEqual(messages, [
+    { role: 'user', text: 'READMEを直して' },
+    { role: 'assistant', text: '確認します。\n\n直しました。' },
+    { role: 'user', text: 'ありがとう' },
+    { role: 'assistant', text: 'どういたしまして。' },
+  ]);
+});
+
+test('past `claude -p` runs come back as quick chats', () => {
+  const tracker = new SessionTracker();
+  tracker.seed([{ id: 'qc-0001', cwd: '/home/me', prompt: '今日は', entrypoint: 'sdk-cli', updatedAt: Date.now() }]);
+  assert.equal(tracker.list()[0].source, 'quickchat');
 });
