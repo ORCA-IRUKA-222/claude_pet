@@ -61,6 +61,7 @@ function readSession(file) {
     id: path.basename(file, '.jsonl'),
     cwd: null,
     prompt: null,
+    firstPrompt: null, // names the conversation when it has no title
     message: null,
     title: null,
     entrypoint: null, // what ran it: cli, the desktop app, an editor extension…
@@ -82,6 +83,7 @@ function readSession(file) {
     if (entry.type === 'custom-title' && entry.customTitle) session.title = clip(entry.customTitle, 120);
     if (entry.type === 'last-prompt' && entry.lastPrompt) session.prompt = clip(entry.lastPrompt, 300);
     else if (isHumanPrompt(entry)) session.prompt = clip(textOf(entry.message.content), 300);
+    if (!session.firstPrompt && isHumanPrompt(entry)) session.firstPrompt = clip(textOf(entry.message.content), 120);
     if (entry.type === 'assistant' && !entry.isSidechain && entry.message) {
       const text = textOf(entry.message.content);
       if (text.trim()) session.message = clip(text, 4000);

@@ -604,7 +604,14 @@ button {
 .session-name {
   display: flex;
   gap: 6px;
-  font-weight: 600;
+  font-weight: 500;
+}
+
+/* unread and attention-needing conversations stand out in the title-only list */
+.session.unread .session-name,
+.session.status-waiting .session-name,
+.session.status-failed .session-name {
+  font-weight: 700;
 }
 
 .session-name .name {
@@ -635,6 +642,11 @@ button {
 
 .session-body {
   padding: 2px 10px 8px 24px;
+}
+
+.session-body .session-detail {
+  white-space: normal;
+  margin-bottom: 4px;
 }
 
 .session-text {
@@ -751,8 +763,19 @@ button {
   margin-top: 4px;
 }
 
+/* where a message goes: Claude Code on this PC, in the cloud, or a chat in the app */
+.target {
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px 4px;
+}
+
 .folder {
-  max-width: 190px;
+  max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

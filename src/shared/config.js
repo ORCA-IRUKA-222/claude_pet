@@ -34,6 +34,8 @@ const DEFAULTS = {
     permissionMode: 'default',
     model: null,
     openInApp: false, // also open each new quick chat in the Claude desktop app
+    target: 'local', // local: Claude Code here, cloud: a cloud session, chat: a normal chat in the app
+    recent: [], // recently used folders
   },
   rotation: {
     enabled: false,

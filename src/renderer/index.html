@@ -72,6 +72,11 @@
         <textarea id="composer-input" rows="2" spellcheck="false"></textarea>
         <div class="composer-row">
           <button type="button" class="text-button folder" id="composer-cwd"></button>
+          <select id="composer-target" class="target">
+            <option value="local" data-i18n="ui.target.local"></option>
+            <option value="cloud" data-i18n="ui.target.cloud"></option>
+            <option value="chat" data-i18n="ui.target.chat"></option>
+          </select>
           <span class="spacer"></span>
           <button type="button" class="text-button" id="composer-close" data-i18n="ui.close"></button>
           <button type="submit" class="send" id="composer-send">↵</button>

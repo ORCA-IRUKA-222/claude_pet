@@ -46,12 +46,13 @@ async function firstAvailable(candidates) {
  * @param {string} [opts.sessionId]  Claude Code session to resume; a new one starts without it
  * @param {string} [opts.claudePath] claude executable
  * @param {string} [opts.template]   custom command, e.g. "wezterm start --cwd {cwd} -- {command}"
+ * @param {string[]} [opts.args]     claude arguments instead of `--resume <session>`
  */
-async function openInTerminal({ cwd, sessionId, claudePath, template }) {
+async function openInTerminal({ cwd, sessionId, claudePath, template, args }) {
   if (sessionId && !SESSION_ID.test(sessionId)) throw new Error('invalid session id');
   const dir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
   const claude = claudePath || 'claude';
-  const claudeArgs = sessionId ? ['--resume', sessionId] : [];
+  const claudeArgs = args || (sessionId ? ['--resume', sessionId] : []);
   const claudeCommand = [/\s/.test(claude) ? `"${claude}"` : claude, ...claudeArgs].join(' ');
 
   if (template) {

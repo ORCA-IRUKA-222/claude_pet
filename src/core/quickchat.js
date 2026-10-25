@@ -2,7 +2,9 @@
 
 // Quick chat: ask Claude Code from the pet. Each message runs `claude -p` with
 // stream-json output; follow-ups reuse the session with --resume, and the
-// conversation can be continued in a terminal afterwards.
+// conversation can be continued in a terminal afterwards. With `cloud`, the task
+// goes to a new cloud session instead (`claude -p --cloud`, on the GitHub repository
+// of the chosen folder), which also shows up in the Claude app.
 
 const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
@@ -13,6 +15,17 @@ const { cleanEnv } = require('../shared/env');
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9-]{7,}$/;
 const PERMISSION_MODES = new Set(['default', 'plan', 'acceptEdits', 'auto', 'dontAsk', 'bypassPermissions']);
 const MODEL = /^[\w.:[\]-]+$/;
+const CLOUD_ID = /^(cse|session)_[A-Za-z0-9]+$/;
+const CLOUD_NOTE = /Cloud session: (\S+) \((https:\/\/claude\.ai\/code\/[^\s)]+)\)/;
+
+/** Arguments for a cloud task: a new session, or a follow-up to one (plain text only). */
+function buildCloudArgs({ resume, text }) {
+  if (resume) {
+    if (!CLOUD_ID.test(resume)) throw new Error('invalid cloud session id');
+    return ['-p', '--cloud', resume];
+  }
+  return text ? ['-p', '--cloud'] : ['-p', '--cloud', '--output-format', 'stream-json', '--verbose'];
+}
 
 function buildArgs({ resume, permissionMode, model }) {
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
@@ -77,11 +90,14 @@ class QuickChat extends EventEmitter {
     return Boolean(this.child);
   }
 
-  send({ prompt, cwd, resume }) {
+  send({ prompt, cwd, resume, cloud = false, text = false }) {
     if (this.child) throw new Error('busy');
     if (!prompt || !String(prompt).trim()) throw new Error('empty prompt');
     const dir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
-    const args = buildArgs({ resume, permissionMode: this.permissionMode, model: this.model });
+    const args = cloud
+      ? buildCloudArgs({ resume, text })
+      : buildArgs({ resume, permissionMode: this.permissionMode, model: this.model });
+    const plain = cloud && (text || Boolean(resume)); // output is the reply as plain text
     const claude = typeof this.claudePath === 'function' ? this.claudePath() : this.claudePath;
     if (!claude) throw Object.assign(new Error('claude not found'), { code: 'CLAUDE_NOT_FOUND' });
 
@@ -97,32 +113,63 @@ class QuickChat extends EventEmitter {
     this.child = child;
 
     let buffer = '';
+    let errBuffer = '';
     let stderr = Buffer.alloc(0);
     let sawResult = false;
-    let sessionId = resume || null;
+    let sawOutput = false;
+    let sessionId = cloud ? null : resume || null;
+
+    const stdoutLine = (raw) => {
+      const line = raw.trim();
+      if (plain || (cloud && !line.startsWith('{'))) {
+        if (raw.trim() || sawOutput) this.emit('event', { type: 'raw', text: raw.replace(/\r$/, '') });
+        sawOutput = true;
+        return;
+      }
+      if (!line) return;
+      sawOutput = true;
+      for (const ev of parseLine(line)) {
+        if (ev.type === 'session') {
+          // a cloud run reports the cloud session's id, which the next message attaches to
+          if (cloud) {
+            if (CLOUD_ID.test(ev.sessionId)) this.emit('event', { type: 'cloud', cloudSessionId: ev.sessionId });
+            continue;
+          }
+          if (ev.sessionId !== sessionId) {
+            sessionId = ev.sessionId;
+            this.emit('event', { ...ev, cwd: dir });
+          }
+          continue;
+        }
+        if (ev.type === 'result') sawResult = true;
+        this.emit('event', ev);
+      }
+    };
 
     child.stdout.on('data', (chunk) => {
       buffer += chunk.toString('utf8');
       let nl;
       while ((nl = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, nl).trim();
+        stdoutLine(buffer.slice(0, nl));
         buffer = buffer.slice(nl + 1);
-        if (!line) continue;
-        for (const ev of parseLine(line)) {
-          if (ev.type === 'session') {
-            if (ev.sessionId !== sessionId) {
-              sessionId = ev.sessionId;
-              this.emit('event', { ...ev, cwd: dir });
-            }
-            continue;
-          }
-          if (ev.type === 'result') sawResult = true;
-          this.emit('event', ev);
-        }
       }
+    });
+    child.stdout.on('end', () => {
+      if (buffer) stdoutLine(buffer);
     });
     child.stderr.on('data', (chunk) => {
       stderr = Buffer.concat([stderr, chunk]).subarray(-4000);
+      if (!cloud) return;
+      // progress notes of a cloud run, including the session it created
+      errBuffer += chunk.toString('utf8');
+      let nl;
+      while ((nl = errBuffer.indexOf('\n')) >= 0) {
+        const line = errBuffer.slice(0, nl).trim();
+        errBuffer = errBuffer.slice(nl + 1);
+        const m = CLOUD_NOTE.exec(line);
+        if (m) this.emit('event', { type: 'cloud', cloudSessionId: m[1], url: m[2] });
+        else if (line) this.emit('event', { type: 'note', text: line });
+      }
     });
     child.on('error', (err) => {
       this.child = null;
@@ -130,11 +177,16 @@ class QuickChat extends EventEmitter {
     });
     child.on('close', (code) => {
       this.child = null;
+      // older or newer CLIs may not stream a new cloud run as JSON: run it again as plain text
+      if (cloud && !plain && !sawOutput && code !== 0 && /stream-json/.test(decodeOutput(stderr))) {
+        this.send({ prompt, cwd, cloud: true, text: true });
+        return;
+      }
       if (!sawResult && code !== 0) {
         const lines = decodeOutput(stderr).trim().split(/\r?\n/).filter(Boolean);
         this.emit('event', { type: 'error', message: lines.slice(-2).join(' ') || `exit ${code}` });
       }
-      this.emit('event', { type: 'done', sessionId, cwd: dir });
+      this.emit('event', { type: 'done', sessionId, cwd: dir, cloud });
     });
 
     child.stdin.on('error', () => {});
@@ -147,4 +199,4 @@ class QuickChat extends EventEmitter {
   }
 }
 
-module.exports = { QuickChat, buildArgs, parseLine, decodeOutput, SESSION_ID };
+module.exports = { QuickChat, buildArgs, buildCloudArgs, parseLine, decodeOutput, SESSION_ID, CLOUD_ID };

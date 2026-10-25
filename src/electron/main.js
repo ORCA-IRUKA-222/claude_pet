@@ -23,7 +23,7 @@ const { translator, formatMinutes } = require('../shared/i18n');
 const { SessionTracker } = require('../core/sessions');
 const { startServer } = require('../core/server');
 const { listPets, findPet } = require('../core/pets');
-const { QuickChat } = require('../core/quickchat');
+const { QuickChat, CLOUD_ID } = require('../core/quickchat');
 const { recentSessions, findTranscript, readConversation } = require('../core/history');
 const rotation = require('../core/rotation');
 const { openInTerminal } = require('../core/terminal');
@@ -31,6 +31,7 @@ const installer = require('../core/installer');
 const autostart = require('../core/autostart');
 const { findClaude, isClaudeExecutable } = require('../core/claude-path');
 const { RelayListener } = require('../core/relay');
+const { cloneRepo, remember } = require('../core/repos');
 const { version } = require('../../package.json');
 const { buildId } = require('../shared/build');
 
@@ -102,6 +103,7 @@ function rendererConfig() {
     showBubble: config.showBubble,
     language: config.language,
     quickChatCwd: config.quickChat.cwd || app.getPath('home'),
+    quickChatTarget: config.quickChat.target || 'local',
     home: app.getPath('home'),
   };
 }
@@ -610,7 +612,7 @@ function registerIpc() {
 
   ipcMain.on('open-url', (_e, url) => {
     // only conversations on claude.ai: cloud sessions and browser chats
-    if (typeof url === 'string' && /^https:\/\/claude\.ai\/[\w/.-]*$/.test(url)) shell.openExternal(url);
+    if (typeof url === 'string' && /^https:\/\/claude\.ai\/[\w/.?=&-]*$/.test(url)) shell.openExternal(url);
   });
 
   ipcMain.handle('open-desktop', async (_e, { sessionId }) => {
@@ -629,19 +631,21 @@ function registerIpc() {
     return { ok: true, sessionId, ...readConversation(file) };
   });
 
-  ipcMain.handle('open-terminal', async (_e, { sessionId, cwd }) => {
+  ipcMain.handle('open-terminal', async (_e, { sessionId, cwd, cloudId }) => {
     try {
-      await openInTerminal({ sessionId, cwd, claudePath: claudeCommand(), template: config.terminalCommand });
+      // a cloud task attaches to its cloud session interactively
+      const args = CLOUD_ID.test(String(cloudId || '')) ? ['--cloud', cloudId] : undefined;
+      await openInTerminal({ sessionId, cwd, claudePath: claudeCommand(), template: config.terminalCommand, args });
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err.message };
     }
   });
 
-  ipcMain.handle('quick-send', (_e, { prompt, cwd, resume }) => {
+  ipcMain.handle('quick-send', (_e, { prompt, cwd, resume, cloud }) => {
     try {
-      const { cwd: used } = quickChat.send({ prompt, cwd, resume });
-      persist({ quickChat: { ...config.quickChat, cwd: used } });
+      const { cwd: used } = quickChat.send({ prompt, cwd, resume, cloud: Boolean(cloud) });
+      persist({ quickChat: { ...config.quickChat, cwd: used, recent: remember(config.quickChat.recent, used) } });
       return { ok: true, cwd: used };
     } catch (err) {
       return { ok: false, error: err.code === 'CLAUDE_NOT_FOUND' ? t('error.claudeNotFound') : err.message };
@@ -654,7 +658,60 @@ function registerIpc() {
       defaultPath: current || app.getPath('home'),
       properties: ['openDirectory'],
     });
-    return result.canceled ? null : result.filePaths[0];
+    if (result.canceled) return null;
+    persist({ quickChat: { ...config.quickChat, recent: remember(config.quickChat.recent, result.filePaths[0]) } });
+    return result.filePaths[0];
+  });
+
+  // where the quick chat works: a recent folder, another folder, or a GitHub repository
+  ipcMain.handle(
+    'folder-menu',
+    (_e, current) =>
+      new Promise((resolve) => {
+        let picked = null;
+        const recent = (config.quickChat.recent || []).filter((d) => fs.existsSync(d));
+        const menu = Menu.buildFromTemplate([
+          ...recent.map((dir) => ({
+            label: dir,
+            type: 'radio',
+            checked: dir === current,
+            click: () => (picked = { dir }),
+          })),
+          ...(recent.length ? [{ type: 'separator' }] : []),
+          { label: t('menu.folder.choose'), click: () => (picked = { choose: true }) },
+          { label: t('menu.folder.github'), click: () => (picked = { clone: true }) },
+        ]);
+        // the click handler runs before the menu-closed callback
+        menu.popup({ window: win, callback: () => setTimeout(() => resolve(picked), 0) });
+      }),
+  );
+
+  ipcMain.handle('clone-repo', async (_e, text) => {
+    try {
+      const { dir } = await cloneRepo(text);
+      persist({ quickChat: { ...config.quickChat, cwd: dir, recent: remember(config.quickChat.recent, dir) } });
+      return { ok: true, dir };
+    } catch (err) {
+      const known = { BAD_REPO: 'error.badRepo', NO_GIT: 'error.noGit' }[err.code];
+      return { ok: false, error: known ? t(known) : err.message };
+    }
+  });
+
+  ipcMain.on('quick-target', (_e, target) => {
+    if (['local', 'cloud', 'chat'].includes(target)) persist({ quickChat: { ...config.quickChat, target } });
+  });
+
+  // a normal chat: a new conversation in the Claude app, asking the question
+  ipcMain.handle('ask-in-app', async (_e, prompt) => {
+    const q = encodeURIComponent(String(prompt || '').slice(0, 4000));
+    try {
+      await shell.openExternal(`claude://claude.ai/new?q=${q}`);
+      return { ok: true };
+    } catch {
+      // no desktop app: the same page in the browser
+      await shell.openExternal(`https://claude.ai/new?q=${q}`).catch(() => {});
+      return { ok: true, browser: true };
+    }
   });
 }
 

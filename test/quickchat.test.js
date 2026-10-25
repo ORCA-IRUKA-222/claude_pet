@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { QuickChat, buildArgs, parseLine, decodeOutput } = require('../src/core/quickchat');
+const { QuickChat, buildArgs, buildCloudArgs, parseLine, decodeOutput } = require('../src/core/quickchat');
 const { tempDir } = require('./helpers');
 
 test('buildArgs validates everything that reaches the command line', () => {
@@ -121,3 +121,64 @@ test('error output from cmd.exe on Japanese Windows is readable', () => {
   assert.equal(decodeOutput(sjis, 'win32'), "'claude' は、内部");
   assert.equal(decodeOutput(Buffer.from('エラー'), 'win32'), 'エラー');
 });
+
+/** A claude that answers cloud tasks: it refuses stream-json, then replies in plain text. */
+function fakeCloudClaude() {
+  const file = path.join(tempDir(), 'claude');
+  fs.writeFileSync(
+    file,
+    `#!/usr/bin/env node
+let input = '';
+process.stdin.on('data', (d) => (input += d));
+process.stdin.on('end', () => {
+  const args = process.argv.slice(2);
+  if (args.includes('stream-json')) {
+    process.stderr.write('Error: claude -p --cloud does not support --output-format stream-json\\n');
+    process.exit(1);
+  }
+  const attach = args[args.indexOf('--cloud') + 1];
+  process.stderr.write('Creating cloud session…\\n');
+  process.stderr.write('Cloud session: cse_01ABC (https://claude.ai/code/session_01ABC)\\n');
+  process.stdout.write((attach ? 'follow-up to ' + attach : 'task') + ': ' + input + '\\n\\nsecond line\\n');
+});
+`,
+  );
+  fs.chmodSync(file, 0o755);
+  return file;
+}
+
+test('cloud tasks start a cloud session, or attach to one for a follow-up', () => {
+  assert.deepEqual(buildCloudArgs({}), ['-p', '--cloud', '--output-format', 'stream-json', '--verbose']);
+  assert.deepEqual(buildCloudArgs({ text: true }), ['-p', '--cloud']);
+  assert.deepEqual(buildCloudArgs({ resume: 'cse_01ABC' }), ['-p', '--cloud', 'cse_01ABC']);
+  assert.throws(() => buildCloudArgs({ resume: '--dangerously-skip-permissions' }), /invalid/);
+});
+
+test(
+  'a cloud task reports its session and reply, falling back to plain text',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const chat = new QuickChat({ claudePath: fakeCloudClaude() });
+    let pending = collect(chat);
+    chat.send({ prompt: 'アプリを作って', cwd: tempDir(), cloud: true });
+    let events = await pending;
+    assert.deepEqual(
+      events.find((e) => e.type === 'cloud'),
+      {
+        type: 'cloud',
+        cloudSessionId: 'cse_01ABC',
+        url: 'https://claude.ai/code/session_01ABC',
+      },
+    );
+    assert.ok(events.some((e) => e.type === 'note' && e.text === 'Creating cloud session…'));
+    const reply = events.filter((e) => e.type === 'raw').map((e) => e.text);
+    assert.deepEqual(reply, ['task: アプリを作って', '', 'second line']);
+    assert.ok(!events.some((e) => e.type === 'error'), 'the stream-json refusal is retried, not shown');
+    assert.equal(events.filter((e) => e.type === 'done').length, 1);
+
+    pending = collect(chat);
+    chat.send({ prompt: '続けて', cwd: tempDir(), cloud: true, resume: 'cse_01ABC' });
+    events = await pending;
+    assert.equal(events.find((e) => e.type === 'raw').text, 'follow-up to cse_01ABC: 続けて');
+  },
+);

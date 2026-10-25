@@ -45,6 +45,7 @@ function newSession(id, cwd, ts, extra = {}) {
     activity: null,
     detail: null,
     prompt: null,
+    firstPrompt: null,
     message: null,
     error: null,
     unread: false,
@@ -127,6 +128,7 @@ class SessionTracker extends EventEmitter {
       case 'UserPromptSubmit':
         this.setRunning(s, 'thinking', null);
         s.prompt = e.prompt || null;
+        if (!s.firstPrompt) s.firstPrompt = s.prompt;
         s.message = null;
         s.error = null;
         s.unread = false;
@@ -270,7 +272,12 @@ class SessionTracker extends EventEmitter {
       // `claude -p` runs (entrypoint sdk-cli) are the pet's quick chats
       const source = h.entrypoint === 'sdk-cli' ? 'quickchat' : 'cli';
       const s = newSession(h.id, h.cwd, h.updatedAt, { history: true, source, entrypoint: h.entrypoint || null });
-      Object.assign(s, { title: h.title || null, prompt: h.prompt || null, message: h.message || null });
+      Object.assign(s, {
+        title: h.title || null,
+        prompt: h.prompt || null,
+        firstPrompt: h.firstPrompt || h.prompt || null,
+        message: h.message || null,
+      });
       this.sessions.set(h.id, s);
       added = true;
     }
