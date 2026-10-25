@@ -119,3 +119,15 @@ test('server refuses to start twice on the same port', async () => {
     server.close();
   }
 });
+
+test('the hook tells the pet where Claude Code runs from', () => {
+  const saved = process.env.CLAUDE_CODE_EXECPATH;
+  process.env.CLAUDE_CODE_EXECPATH = '/opt/claude-code/bin/claude';
+  try {
+    assert.equal(compact({ hook_event_name: 'SessionStart', session_id: 'abc' }).claude_path, '/opt/claude-code/bin/claude');
+    assert.equal(compact({ hook_event_name: 'PreToolUse', session_id: 'abc' }).claude_path, undefined);
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_CODE_EXECPATH;
+    else process.env.CLAUDE_CODE_EXECPATH = saved;
+  }
+});

@@ -52,13 +52,13 @@ function allowedHost(header, port) {
  *   onControl(command)    { action, value } from the CLI; may return a JSON-able result
  *   getStatus()           snapshot for `claude-pet status`
  */
-function startServer({ port, onEvent, onControl, getStatus, version = '0.0.0' }) {
+function startServer({ port, onEvent, onControl, getStatus, version = '0.0.0', build = null }) {
   const server = http.createServer(async (req, res) => {
     if (req.headers.origin || !allowedHost(req.headers.host, port)) return send(res, 403, { error: 'forbidden' });
 
     const url = req.url.split('?')[0];
     try {
-      if (req.method === 'GET' && url === '/health') return send(res, 200, { ok: true, app: 'claude-pet', version });
+      if (req.method === 'GET' && url === '/health') return send(res, 200, { ok: true, app: 'claude-pet', version, build });
       if (req.method === 'GET' && url === '/status') return send(res, 200, getStatus());
 
       if (req.method === 'POST' && (url === '/event' || url === '/control')) {

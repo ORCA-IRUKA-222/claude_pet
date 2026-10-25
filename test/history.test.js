@@ -66,7 +66,7 @@ test('recentSessions lists recent conversations newest first and skips old or em
   );
   assert.ok(ids.includes('eeee-5555'));
   assert.ok(ids.includes('aaaa-1111'));
-  assert.ok(!ids.includes('cccc-3333'), 'older than three days');
+  assert.ok(!ids.includes('cccc-3333'), 'older than a week');
   assert.ok(!ids.includes('dddd-4444'), 'no conversation in it');
 });
 

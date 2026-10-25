@@ -48,6 +48,7 @@ const state = {
 };
 
 let t = PetI18n.translator('ja');
+let choosingFolder = false; // the folder dialog takes focus; keep the quick-chat box open
 
 // ------------------------------------------------------------------ helpers
 
@@ -312,7 +313,7 @@ function renderChat() {
   if (!state.chat.messages.length) log.appendChild(el('p', 'empty', t('ui.quickPlaceholder')));
   log.scrollTop = log.scrollHeight;
   ui.chatStop.hidden = !state.chat.busy;
-  $('chat-terminal').disabled = !state.chat.sessionId || state.chat.busy;
+  $('chat-terminal').disabled = state.chat.busy;
   $('chat-copy').disabled = !state.chat.messages.some((m) => m.role === 'assistant' && m.text);
 }
 
@@ -545,7 +546,9 @@ function setupControls() {
     setTimeout(() => applyI18n(), 1200);
   });
   $('chat-terminal').addEventListener('click', async () => {
-    if (state.chat.sessionId) await api.openTerminal(state.chat.sessionId, state.chat.cwd);
+    // without a session yet, a new conversation starts in the chosen folder
+    const res = await api.openTerminal(state.chat.sessionId || null, state.chat.cwd || state.config.quickChatCwd);
+    if (!res.ok) showToast(t('ui.terminalFailed'), res.error);
   });
 
   ui.composer.addEventListener('submit', (e) => {
@@ -559,9 +562,16 @@ function setupControls() {
     }
   });
   ui.composerInput.addEventListener('input', reportSize);
+  // an empty quick-chat box goes away when you switch to another window
+  window.addEventListener('blur', () => {
+    if (state.composerOpen && !choosingFolder && !state.chat.busy && !ui.composerInput.value.trim()) closeComposer();
+  });
   $('composer-close').addEventListener('click', closeComposer);
   ui.composerCwd.addEventListener('click', async () => {
-    const folder = await api.chooseFolder(state.chat.cwd || state.config.quickChatCwd);
+    choosingFolder = true;
+    const folder = await api.chooseFolder(state.chat.cwd || state.config.quickChatCwd).finally(() => {
+      choosingFolder = false;
+    });
     if (folder) {
       if (folder !== state.chat.cwd) state.chat.sessionId = null; // a new folder starts a new session
       state.chat.cwd = folder;

@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { QuickChat, buildArgs, parseLine } = require('../src/core/quickchat');
+const { QuickChat, buildArgs, parseLine, decodeOutput } = require('../src/core/quickchat');
 const { tempDir } = require('./helpers');
 
 test('buildArgs validates everything that reaches the command line', () => {
@@ -103,4 +103,21 @@ test('QuickChat reports a missing claude binary', async () => {
   chat.send({ prompt: 'hello' });
   const events = await pending;
   assert.ok(events.some((e) => e.type === 'error'));
+});
+
+test('QuickChat says so when no claude command was found', () => {
+  const chat = new QuickChat({ claudePath: () => null });
+  assert.throws(
+    () => chat.send({ prompt: 'hello' }),
+    (err) => err.code === 'CLAUDE_NOT_FOUND',
+  );
+  assert.equal(chat.busy, false);
+});
+
+test('error output from cmd.exe on Japanese Windows is readable', () => {
+  const sjis = Buffer.from([
+    0x27, 0x63, 0x6c, 0x61, 0x75, 0x64, 0x65, 0x27, 0x20, 0x82, 0xcd, 0x81, 0x41, 0x93, 0xe0, 0x95, 0x94,
+  ]);
+  assert.equal(decodeOutput(sjis, 'win32'), "'claude' は、内部");
+  assert.equal(decodeOutput(Buffer.from('エラー'), 'win32'), 'エラー');
 });

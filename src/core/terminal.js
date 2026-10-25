@@ -1,6 +1,6 @@
 'use strict';
 
-// Open a terminal window that runs `claude --resume <session>` in a folder.
+// Open a terminal window that runs `claude --resume <session>` (or a new `claude`) in a folder.
 
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -43,15 +43,16 @@ async function firstAvailable(candidates) {
 /**
  * @param {object} opts
  * @param {string} opts.cwd          folder to start in
- * @param {string} opts.sessionId    Claude Code session to resume
+ * @param {string} [opts.sessionId]  Claude Code session to resume; a new one starts without it
  * @param {string} [opts.claudePath] claude executable
  * @param {string} [opts.template]   custom command, e.g. "wezterm start --cwd {cwd} -- {command}"
  */
 async function openInTerminal({ cwd, sessionId, claudePath, template }) {
-  if (!SESSION_ID.test(sessionId || '')) throw new Error('invalid session id');
+  if (sessionId && !SESSION_ID.test(sessionId)) throw new Error('invalid session id');
   const dir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
   const claude = claudePath || 'claude';
-  const claudeCommand = `${/\s/.test(claude) ? JSON.stringify(claude) : claude} --resume ${sessionId}`;
+  const claudeArgs = sessionId ? ['--resume', sessionId] : [];
+  const claudeCommand = [/\s/.test(claude) ? `"${claude}"` : claude, ...claudeArgs].join(' ');
 
   if (template) {
     const command = template.replaceAll('{cwd}', JSON.stringify(dir)).replaceAll('{command}', claudeCommand);
@@ -70,7 +71,8 @@ async function openInTerminal({ cwd, sessionId, claudePath, template }) {
     }
     case 'win32':
       return firstAvailable([
-        ['wt.exe', ['-d', dir, 'cmd.exe', '/k', claudeCommand]],
+        // separate arguments: Windows Terminal quotes each one again for the new tab
+        ['wt.exe', ['-d', dir, 'cmd.exe', '/k', claude, ...claudeArgs]],
         ['cmd.exe', ['/c', 'start', '""', '/D', `"${dir}"`, 'cmd.exe', '/k', claudeCommand], { windowsVerbatimArguments: true }],
       ]);
     default: {

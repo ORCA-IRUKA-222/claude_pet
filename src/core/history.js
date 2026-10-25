@@ -85,8 +85,8 @@ function readSession(file) {
   return session.prompt || session.message ? session : null;
 }
 
-/** Recent sessions, newest first. */
-function recentSessions({ maxAgeMs = 3 * 24 * 3600e3, limit = 15, now = Date.now() } = {}) {
+/** Every transcript file with its modification time, newest first. */
+function transcriptFiles() {
   const root = path.join(claudeDir(), 'projects');
   let dirs = [];
   try {
@@ -106,16 +106,20 @@ function recentSessions({ maxAgeMs = 3 * 24 * 3600e3, limit = 15, now = Date.now
       if (!name.endsWith('.jsonl')) continue;
       const file = path.join(root, dir.name, name);
       try {
-        const { mtimeMs } = fs.statSync(file);
-        if (now - mtimeMs <= maxAgeMs) files.push({ file, mtimeMs });
+        files.push({ file, mtimeMs: fs.statSync(file).mtimeMs });
       } catch {
         // vanished while listing
       }
     }
   }
-  files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+/** Recent sessions, newest first. */
+function recentSessions({ maxAgeMs = 7 * 24 * 3600e3, limit = 20, now = Date.now() } = {}) {
   const sessions = [];
-  for (const { file } of files) {
+  for (const { file, mtimeMs } of transcriptFiles()) {
+    if (now - mtimeMs > maxAgeMs) break;
     if (sessions.length >= limit) break;
     const s = readSession(file);
     if (s) sessions.push(s);
@@ -123,4 +127,4 @@ function recentSessions({ maxAgeMs = 3 * 24 * 3600e3, limit = 15, now = Date.now
   return sessions;
 }
 
-module.exports = { recentSessions, readSession, isHumanPrompt };
+module.exports = { recentSessions, readSession, transcriptFiles, isHumanPrompt };

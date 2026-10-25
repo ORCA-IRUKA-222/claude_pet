@@ -43,7 +43,8 @@ const DEFAULTS = {
     lastChangedAt: 0,
     queue: [],
   },
-  claudePath: null, // defaults to `claude` on PATH
+  claudePath: null, // defaults to `claude` on PATH or in the usual install folders
+  learnedClaudePath: null, // where Claude Code ran from, as reported by the hook
   terminalCommand: null, // e.g. "wezterm start --cwd {cwd} -- {command}"
   staleMinutes: 30,
 };

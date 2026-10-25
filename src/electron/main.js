@@ -29,7 +29,9 @@ const rotation = require('../core/rotation');
 const { openInTerminal } = require('../core/terminal');
 const installer = require('../core/installer');
 const autostart = require('../core/autostart');
+const { findClaude, isClaudeExecutable } = require('../core/claude-path');
 const { version } = require('../../package.json');
+const { buildId } = require('../shared/build');
 
 const SCALES = { small: 0.5, medium: 0.75, large: 1 };
 const ROTATION_INTERVALS = [15, 30, 60, 120, 180];
@@ -46,8 +48,9 @@ let saveTimer = null;
 let quitting = false;
 
 const tracker = new SessionTracker({ staleMs: config.staleMinutes * 60e3 });
+const claudeCommand = () => findClaude({ configured: config.claudePath, learned: config.learnedClaudePath });
 const quickChat = new QuickChat({
-  claudePath: config.claudePath,
+  claudePath: claudeCommand,
   permissionMode: config.quickChat.permissionMode,
   model: config.quickChat.model,
 });
@@ -368,6 +371,11 @@ function buildMenu() {
   ]);
 }
 
+function learnClaudePath(file) {
+  if (!file || file === config.learnedClaudePath || !isClaudeExecutable(file)) return;
+  persist({ learnedClaudePath: file });
+}
+
 // ---------------------------------------------------------------- start at sign-in
 
 const autostartOptions = () => ({ electron: process.execPath, appRoot: APP_ROOT });
@@ -546,7 +554,7 @@ function registerIpc() {
 
   ipcMain.handle('open-terminal', async (_e, { sessionId, cwd }) => {
     try {
-      await openInTerminal({ sessionId, cwd, claudePath: config.claudePath, template: config.terminalCommand });
+      await openInTerminal({ sessionId, cwd, claudePath: claudeCommand(), template: config.terminalCommand });
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err.message };
@@ -559,7 +567,7 @@ function registerIpc() {
       persist({ quickChat: { ...config.quickChat, cwd: used } });
       return { ok: true, cwd: used };
     } catch (err) {
-      return { ok: false, error: err.message };
+      return { ok: false, error: err.code === 'CLAUDE_NOT_FOUND' ? t('error.claudeNotFound') : err.message };
     }
   });
   ipcMain.on('quick-stop', () => quickChat.stop());
@@ -597,7 +605,11 @@ async function boot() {
     await startServer({
       port: getPort(),
       version,
-      onEvent: (event) => tracker.handle(event),
+      build: buildId(),
+      onEvent: (event) => {
+        learnClaudePath(event && event.claude_path);
+        tracker.handle(event);
+      },
       onControl: handleControl,
       getStatus: () => ({ visible: Boolean(win && win.isVisible()), sessions: tracker.list(), aggregate: tracker.aggregate() }),
     });

@@ -3,7 +3,9 @@
 
 const { spawn } = require('child_process');
 const fs = require('fs');
-const { APP_ROOT, loadConfig, saveConfig } = require('../src/shared/config');
+const path = require('path');
+const { APP_ROOT, claudeDir, loadConfig, saveConfig } = require('../src/shared/config');
+const { buildId } = require('../src/shared/build');
 const { translator } = require('../src/shared/i18n');
 const { cleanEnv } = require('../src/shared/env');
 const client = require('../src/core/client');
@@ -17,6 +19,7 @@ const HELP = `claude-pet — Claude Code のデスクトップペット
   claude-pet chat                クイックチャットを開く
   claude-pet quit                終了
   claude-pet status              セッションの状態を表示
+  claude-pet doctor              うまく動かないときの診断
   claude-pet setup               Claude Code にフックと /pet, /hatch-pet を登録
   claude-pet uninstall           登録を解除
   claude-pet pets                使えるペットの一覧
@@ -60,6 +63,19 @@ function launchApp() {
   child.unref();
 }
 
+/** A pet started from older files (before `git pull`) is restarted so the update takes effect. */
+async function restartIfStale({ wait = true } = {}) {
+  const running = await client.health();
+  const local = buildId();
+  if (!running || !local || running.build === local) return false;
+  await client.control('quit');
+  const until = Date.now() + 5000;
+  while (Date.now() < until && (await client.isRunning())) await new Promise((r) => setTimeout(r, 200));
+  launchApp();
+  if (wait) await waitUntilRunning(15000);
+  return true;
+}
+
 async function start({ wait = true } = {}) {
   if (await client.isRunning()) {
     await client.control('show');
@@ -91,6 +107,7 @@ async function runPetCommand(args, { wait = true } = {}) {
         await start({ wait });
         return t('cli.starting');
       }
+      if (await restartIfStale({ wait })) return t('cli.restarted');
       await client.control('show');
       return t('cli.shown');
     case 'hide':
@@ -274,6 +291,45 @@ async function slashHook() {
   process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
 }
 
+async function doctor() {
+  const { findClaude } = require('../src/core/claude-path');
+  const { transcriptFiles } = require('../src/core/history');
+  const installer = require('../src/core/installer');
+  const autostart = require('../src/core/autostart');
+  const config = loadConfig();
+  const running = await client.health();
+  const local = buildId();
+  const claude = findClaude({ configured: config.claudePath, learned: config.learnedClaudePath });
+  const files = transcriptFiles();
+  const recent = files.filter((f) => Date.now() - f.mtimeMs <= 7 * 24 * 3600e3).length;
+  const lines = [
+    [
+      'ペット本体',
+      !running
+        ? '起動していません（claude-pet で起動）'
+        : local && running.build !== local
+          ? '古いバージョンが動いています（claude-pet で再起動されます）'
+          : `起動中（${local || running.version}）`,
+    ],
+    ['Claude Code', claude || '見つかりません（クイックチャットと「ターミナルで続ける」が使えません）'],
+    ['フック', installer.isInstalled() ? '登録済み' : '未登録（claude-pet setup を実行してください）'],
+    [
+      '会話記録',
+      files.length
+        ? `${files.length} 件（直近 7 日 ${recent} 件、最新 ${new Date(files[0].mtimeMs).toLocaleString('ja-JP')}）`
+        : 'ありません',
+    ],
+    ['記録の場所', path.join(claudeDir(), 'projects')],
+    ['自動起動', autostart.isEnabled() ? 'オン' : 'オフ'],
+  ];
+  for (const [label, value] of lines) console.log(`${label}: ${value}`);
+  if (!files.length) {
+    console.log(
+      '\nこのPCで Claude Code を使った記録がありません。Claude アプリや Web のクラウドで動く会話は、PC に記録が残らないためペットには出せません。',
+    );
+  }
+}
+
 function printStatus(data) {
   const sessions = (data && data.sessions) || [];
   if (!sessions.length) {
@@ -311,6 +367,9 @@ async function main(argv) {
     case 'pet':
       // Same arguments as the /pet slash command (no argument toggles).
       console.log(await runPetCommand(args));
+      break;
+    case 'doctor':
+      await doctor();
       break;
     case 'status':
       if (!(await client.isRunning())) console.log(translator(loadConfig().language)('cli.notRunning'));

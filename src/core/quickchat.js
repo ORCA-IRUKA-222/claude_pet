@@ -31,6 +31,17 @@ function buildArgs({ resume, permissionMode, model }) {
   return args;
 }
 
+/** Error output as text; cmd.exe on Japanese Windows writes Shift_JIS, not UTF-8. */
+function decodeOutput(buffer, platform = process.platform) {
+  const text = buffer.toString('utf8');
+  if (platform !== 'win32' || !text.includes('\uFFFD')) return text;
+  try {
+    return new TextDecoder('shift_jis').decode(buffer);
+  } catch {
+    return text;
+  }
+}
+
 /** Turn one stream-json line into zero or more UI events. */
 function parseLine(line) {
   let msg;
@@ -53,6 +64,7 @@ function parseLine(line) {
 }
 
 class QuickChat extends EventEmitter {
+  /** @param {object} opts  `claudePath` may be a function, asked again before every message. */
   constructor({ claudePath = null, permissionMode = 'default', model = null } = {}) {
     super();
     this.claudePath = claudePath || 'claude';
@@ -70,10 +82,12 @@ class QuickChat extends EventEmitter {
     if (!prompt || !String(prompt).trim()) throw new Error('empty prompt');
     const dir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
     const args = buildArgs({ resume, permissionMode: this.permissionMode, model: this.model });
+    const claude = typeof this.claudePath === 'function' ? this.claudePath() : this.claudePath;
+    if (!claude) throw Object.assign(new Error('claude not found'), { code: 'CLAUDE_NOT_FOUND' });
 
     // npm installs `claude.cmd` on Windows, which needs a shell. Arguments are validated above.
-    const useShell = process.platform === 'win32';
-    const command = useShell && /\s/.test(this.claudePath) ? `"${this.claudePath}"` : this.claudePath;
+    const useShell = process.platform === 'win32' && !/\.exe$/i.test(claude);
+    const command = useShell && /\s/.test(claude) ? `"${claude}"` : claude;
     const child = spawn(command, args, {
       cwd: dir,
       env: cleanEnv(process.env, { CLAUDE_PET_SOURCE: 'quickchat' }),
@@ -83,7 +97,7 @@ class QuickChat extends EventEmitter {
     this.child = child;
 
     let buffer = '';
-    let stderr = '';
+    let stderr = Buffer.alloc(0);
     let sawResult = false;
     let sessionId = resume || null;
 
@@ -108,16 +122,17 @@ class QuickChat extends EventEmitter {
       }
     });
     child.stderr.on('data', (chunk) => {
-      stderr = (stderr + chunk.toString('utf8')).slice(-2000);
+      stderr = Buffer.concat([stderr, chunk]).subarray(-4000);
     });
     child.on('error', (err) => {
       this.child = null;
-      this.emit('event', { type: 'error', message: err.code === 'ENOENT' ? `${this.claudePath} が見つかりません` : err.message });
+      this.emit('event', { type: 'error', message: err.code === 'ENOENT' ? `${claude} が見つかりません` : err.message });
     });
     child.on('close', (code) => {
       this.child = null;
       if (!sawResult && code !== 0) {
-        this.emit('event', { type: 'error', message: stderr.trim().split('\n').pop() || `exit ${code}` });
+        const lines = decodeOutput(stderr).trim().split(/\r?\n/).filter(Boolean);
+        this.emit('event', { type: 'error', message: lines.slice(-2).join(' ') || `exit ${code}` });
       }
       this.emit('event', { type: 'done', sessionId, cwd: dir });
     });
@@ -132,4 +147,4 @@ class QuickChat extends EventEmitter {
   }
 }
 
-module.exports = { QuickChat, buildArgs, parseLine, SESSION_ID };
+module.exports = { QuickChat, buildArgs, parseLine, decodeOutput, SESSION_ID };
