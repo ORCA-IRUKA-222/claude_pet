@@ -7,9 +7,9 @@
 // Usage: node tools/build-pet.js <design.js> [--out <dir>] [--install]
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const atlas = require('../src/shared/atlas');
+const { homeDir } = require('../src/shared/config');
 const { Canvas } = require('./raster');
 const { encodePNG } = require('../src/shared/png');
 
@@ -97,17 +97,13 @@ function writePNG(file, canvas) {
   fs.writeFileSync(file, encodePNG(canvas.width, canvas.height, canvas.data));
 }
 
-function buildPet(designPath, { outDir, install = false } = {}) {
-  const resolved = path.resolve(designPath);
-  delete require.cache[resolved];
-  const design = require(resolved);
+function buildDesign(design, { target, install }) {
   if (!design.id || !/^[a-z0-9][a-z0-9-]*$/.test(design.id))
     throw new Error('design.id must be lowercase letters, digits and hyphens');
   if (typeof design.draw !== 'function') throw new Error('design.draw(canvas, pose) is required');
 
   const rendered = renderFrames(design);
   const problems = validate(rendered);
-  const target = outDir ? path.resolve(outDir) : path.join(path.dirname(resolved), 'build', design.id);
 
   writePNG(path.join(target, 'spritesheet.png'), composeAtlas(rendered));
   writePNG(path.join(target, 'qa', 'contact-sheet.png'), composeContactSheet(rendered));
@@ -118,11 +114,12 @@ function buildPet(designPath, { outDir, install = false } = {}) {
     spritesheetPath: 'spritesheet.png',
     pixelArt: true,
   };
+  if (design.group) manifest.group = design.group;
   fs.writeFileSync(path.join(target, 'pet.json'), JSON.stringify(manifest, null, 2) + '\n');
 
   let installedTo = null;
   if (install) {
-    installedTo = path.join(os.homedir(), '.claude-pet', 'pets', design.id);
+    installedTo = path.join(homeDir(), 'pets', design.id);
     fs.mkdirSync(installedTo, { recursive: true });
     fs.copyFileSync(path.join(target, 'spritesheet.png'), path.join(installedTo, 'spritesheet.png'));
     fs.copyFileSync(path.join(target, 'pet.json'), path.join(installedTo, 'pet.json'));
@@ -131,28 +128,59 @@ function buildPet(designPath, { outDir, install = false } = {}) {
   return { outDir: target, contactSheet: path.join(target, 'qa', 'contact-sheet.png'), problems, installedTo, manifest };
 }
 
+/**
+ * A design file exports one design, an array of designs, or
+ * { template: 'chibi', group, characters: [...] } for a set of chibi characters.
+ */
+function loadDesigns(designPath) {
+  const resolved = path.resolve(designPath);
+  delete require.cache[resolved];
+  const mod = require(resolved);
+  if (mod && Array.isArray(mod.characters)) {
+    if (mod.template !== 'chibi') throw new Error(`unknown template: ${mod.template}`);
+    const { createChibi } = require('./designs/chibi');
+    return mod.characters.map((ch) => createChibi({ group: mod.group, ...ch }));
+  }
+  return Array.isArray(mod) ? mod : [mod];
+}
+
+/** Build every design in a file. Returns one result per pet. */
+function buildPets(designPath, { outDir, install = false } = {}) {
+  const designs = loadDesigns(designPath);
+  const base = outDir ? path.resolve(outDir) : path.join(path.dirname(path.resolve(designPath)), 'build');
+  return designs.map((design) => {
+    const target = outDir && designs.length === 1 ? base : path.join(base, design.id);
+    return buildDesign(design, { target, install });
+  });
+}
+
+/** Build a single-design file (kept for callers that expect one result). */
+function buildPet(designPath, options) {
+  return buildPets(designPath, options)[0];
+}
+
+function printResult(result) {
+  console.log(`pet: ${result.manifest.displayName} (${result.manifest.id})`);
+  console.log(`  package: ${result.outDir}`);
+  console.log(`  contact sheet: ${result.contactSheet}`);
+  if (result.installedTo) console.log(`  installed: ${result.installedTo}`);
+  for (const p of result.problems) console.log(`  warning: ${p}`);
+  if (!result.problems.length) console.log('  validation: ok');
+}
+
 if (require.main === module) {
   const args = process.argv.slice(2);
-  const design = args.find((a) => !a.startsWith('--') && args[args.indexOf(a) - 1] !== '--out');
+  const design = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--out');
   if (!design) {
     console.error('Usage: node tools/build-pet.js <design.js> [--out <dir>] [--install]');
     process.exit(1);
   }
   const outIndex = args.indexOf('--out');
-  const result = buildPet(design, {
+  const results = buildPets(design, {
     outDir: outIndex >= 0 ? args[outIndex + 1] : undefined,
     install: args.includes('--install'),
   });
-  console.log(`pet: ${result.manifest.displayName} (${result.manifest.id})`);
-  console.log(`package: ${result.outDir}`);
-  console.log(`contact sheet: ${result.contactSheet}`);
-  if (result.installedTo) console.log(`installed: ${result.installedTo}`);
-  if (result.problems.length) {
-    console.log('warnings:');
-    for (const p of result.problems) console.log(`  - ${p}`);
-  } else {
-    console.log('validation: ok');
-  }
+  results.forEach(printResult);
 }
 
-module.exports = { buildPet, renderFrames, validate };
+module.exports = { buildPet, buildPets, loadDesigns, renderFrames, validate, printResult };

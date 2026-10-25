@@ -82,11 +82,11 @@ module.exports = {
 
 ChatGPT の hatch-pet と同じく、文字・記号・吹き出し・背景・影・体から離れたエフェクトは描きません。涙や汗のような小さなものは体にくっつけて描きます。
 
-## 画像 1 枚からペットにする場合
+## イラストからペットにする場合
 
-ユーザーが透過 PNG / WebP / GIF を持っているなら、コードで描かずにそのまま使えます（アプリが動きを付けます）。
+ユーザーが背景の透明なイラスト（PNG / WebP / GIF）を持っているなら、コードで描かずにそのまま使えます（アプリが動きと影を付けます）。イラストなら `--height 320` 前後を付けると見やすい大きさになります。状態ごとに別の絵があれば `--state running=<画像>` のように追加します（idle, running, waiting, ready, failed）。
 
 ```bash
-{{NODE}} {{CLI}} add-image <画像のパス> --name <名前>
-{{NODE}} {{CLI}} use <表示された id>
+{{NODE}} {{CLI}} add-image <画像のパス> --id <id> --name <名前> --height 320
+{{NODE}} {{CLI}} use <id>
 ```

@@ -260,6 +260,96 @@ button {
   }
 }
 
+/* Illustrations (image pets with a display height) move more gently and get a soft shadow. */
+.sprite.illust img {
+  filter: drop-shadow(0 3px 5px rgba(30, 20, 30, 0.3));
+}
+.illust.anim-idle img {
+  animation: i-breathe 3.2s ease-in-out infinite;
+}
+.illust.anim-running img,
+.illust.anim-running-right img,
+.illust.anim-running-left img {
+  animation: i-bob 0.9s ease-in-out infinite;
+}
+.illust.anim-running-right img,
+.illust.anim-running-left img {
+  animation-duration: 0.45s;
+}
+.illust.anim-review img {
+  animation: i-tilt 2.4s ease-in-out infinite;
+}
+.illust.anim-waiting img {
+  animation: i-ask 1.2s ease-in-out infinite;
+}
+.illust.anim-waving img {
+  animation: i-sway 0.8s ease-in-out infinite;
+}
+.illust.anim-jumping img {
+  animation: i-jump 0.8s ease-out infinite;
+}
+.illust.anim-failed img {
+  animation: i-droop 2s ease-in-out infinite;
+  filter: saturate(0.6) brightness(0.95) drop-shadow(0 3px 5px rgba(30, 20, 30, 0.3));
+}
+
+@keyframes i-breathe {
+  50% {
+    transform: translateY(0.6%) scale(1.008, 0.994);
+  }
+}
+@keyframes i-bob {
+  50% {
+    transform: translateY(-2%);
+  }
+}
+@keyframes i-tilt {
+  25% {
+    transform: rotate(-1.5deg);
+  }
+  75% {
+    transform: rotate(1.5deg);
+  }
+}
+@keyframes i-ask {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0);
+  }
+  35% {
+    transform: translateY(-3.5%) rotate(-1.2deg);
+  }
+  65% {
+    transform: translateY(0) rotate(0.8deg);
+  }
+}
+@keyframes i-sway {
+  25% {
+    transform: rotate(-2.5deg);
+  }
+  75% {
+    transform: rotate(2.5deg);
+  }
+}
+@keyframes i-jump {
+  0%,
+  100% {
+    transform: translateY(0) scale(1.01, 0.99);
+  }
+  45% {
+    transform: translateY(-7%);
+  }
+}
+@keyframes i-droop {
+  0%,
+  100% {
+    transform: translateY(1.2%) scale(0.995);
+  }
+  50% {
+    transform: translateY(2%) scale(0.99);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sprite img,
   .dot {
@@ -487,6 +577,7 @@ button {
 
 #tab-chat .toolbar {
   border-top: 1px solid var(--border);
+  flex-wrap: wrap;
 }
 
 .session-list {
@@ -527,10 +618,33 @@ button {
   min-width: 0;
 }
 
+/* sits over the right end of the row (a button can't hold another button) */
+.session {
+  position: relative;
+}
+
+.session-row {
+  padding-right: 30px;
+}
+
+.session-more {
+  position: absolute;
+  top: 3px;
+  right: 2px;
+  font-size: 13px;
+}
+
 .session-name {
   display: flex;
   gap: 6px;
-  font-weight: 600;
+  font-weight: 500;
+}
+
+/* unread and attention-needing conversations stand out in the title-only list */
+.session.unread .session-name,
+.session.status-waiting .session-name,
+.session.status-failed .session-name {
+  font-weight: 700;
 }
 
 .session-name .name {
@@ -561,6 +675,11 @@ button {
 
 .session-body {
   padding: 2px 10px 8px 24px;
+}
+
+.session-body .session-detail {
+  white-space: normal;
+  margin-bottom: 4px;
 }
 
 .session-text {
@@ -606,11 +725,11 @@ button {
 .chat-log {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  max-height: 300px;
+  gap: 10px;
+  max-height: 420px;
   min-height: 60px;
   overflow-y: auto;
-  padding: 10px;
+  padding: 10px 12px;
 }
 
 .msg {
@@ -621,21 +740,137 @@ button {
   word-break: break-word;
 }
 
+/* only what you wrote is a bubble; Claude's answer uses the panel's full width */
 .msg.user {
   align-self: flex-end;
+  max-width: 85%;
   background: var(--accent);
   color: #fff;
   border-bottom-right-radius: 4px;
 }
 
 .msg.assistant {
-  align-self: flex-start;
+  align-self: stretch;
+  max-width: none;
+  padding: 0 2px;
+  border-radius: 0;
+  line-height: 1.6;
+  white-space: normal;
+}
+
+/* Claude's replies, rendered from Markdown */
+.md > :first-child {
+  margin-top: 0;
+}
+
+.md > :last-child {
+  margin-bottom: 0;
+}
+
+.md p,
+.md ul,
+.md ol,
+.md pre,
+.md blockquote,
+.md .md-table {
+  margin: 0 0 8px;
+}
+
+.md ul,
+.md ol {
+  padding-left: 20px;
+}
+
+/* lists in a reply inside the session list would otherwise look nested */
+.md ul {
+  list-style: disc;
+}
+
+.md ul ul {
+  list-style: circle;
+}
+
+.md li {
+  margin: 2px 0;
+}
+
+.md li > ul,
+.md li > ol {
+  margin: 2px 0;
+}
+
+.md .md-h {
+  margin: 10px 0 4px;
+  font-weight: 700;
+}
+
+.md .md-h1,
+.md .md-h2 {
+  font-size: 1.12em;
+}
+
+.md code {
+  padding: 1px 4px;
+  border-radius: 4px;
   background: var(--surface-2);
-  border-bottom-left-radius: 4px;
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 0.92em;
+}
+
+.md pre {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.md pre code {
+  padding: 0;
+  background: none;
+}
+
+.md blockquote {
+  padding-left: 10px;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+
+.md hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 10px 0;
+}
+
+.md .md-table {
+  overflow-x: auto;
+}
+
+.md table {
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+
+.md th,
+.md td {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.md th {
+  background: var(--surface-2);
+}
+
+.md a {
+  color: var(--accent);
 }
 
 .msg.error {
   color: var(--failed);
+  padding-left: 8px;
+  border-left: 3px solid var(--failed);
 }
 
 .msg .tool {
@@ -651,7 +886,7 @@ button {
 }
 
 .composer {
-  width: 280px;
+  width: 320px;
   padding: 8px;
   border-radius: 14px;
   background: var(--surface);
@@ -677,8 +912,19 @@ button {
   margin-top: 4px;
 }
 
+/* where a message goes: Claude Code on this PC, in the cloud, or a chat in the app */
+.target {
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px 4px;
+}
+
 .folder {
-  max-width: 190px;
+  max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -699,6 +945,129 @@ button {
 .send:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.bubble.toast .dot {
+  background: var(--accent);
+}
+
+.session-text .md {
+  white-space: normal;
+}
+
+.session-text .md code,
+.session-text .md pre,
+.session-text .md th {
+  background: var(--surface);
+}
+
+/* files going with the next message */
+.composer-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  padding: 2px 4px 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip-x {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.msg-files {
+  margin-top: 4px;
+  font-size: 12px;
+  opacity: 0.9;
+  white-space: pre-wrap;
+}
+
+#composer-attach {
+  width: 24px;
+  height: 24px;
+  font-size: 14px;
+}
+
+/* messages for you while the input is open (a failed clone, files that can't go to the cloud) */
+.composer-notice {
+  margin-bottom: 6px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* your GitHub repositories, while picking one */
+.composer-repos {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  overflow-y: auto;
+  margin-bottom: 6px;
+}
+
+.repo-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.repo-item:hover,
+.repo-item.active {
+  background: var(--surface-2);
+}
+
+.repo-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.repo-badge {
+  font-size: 11px;
+  color: var(--ready);
+}
+
+.repo-desc {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-note {
+  padding: 4px 8px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 /* ------------------------------------------------------------------ shared controls */
@@ -968,30 +1337,6 @@ textarea.memo-edit:focus {
   font-variant-numeric: tabular-nums;
 }
 
-.speech {
-  max-width: 250px;
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-}
-
-.speech.sticky {
-  animation: nudge 1.4s ease-in-out infinite;
-}
-
-.speech-text {
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-@keyframes nudge {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-3px);
-  }
-}
-
 /* ------------------------------------------------------------------ session list additions */
 
 .session-meta {
@@ -1097,227 +1442,6 @@ textarea.memo-edit:focus {
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* ------------------------------------------------------------------ markdown */
-
-.session-text.rich,
-.msg.rich {
-  white-space: normal;
-}
-
-.session-text.rich {
-  max-height: 220px;
-}
-
-.md > :first-child {
-  margin-top: 0;
-}
-
-.md > :last-child {
-  margin-bottom: 0;
-}
-
-.md p,
-.md ul,
-.md ol,
-.md blockquote,
-.md .md-code,
-.md .md-table {
-  margin: 0 0 6px;
-}
-
-.md .md-h {
-  margin: 8px 0 4px;
-  font-size: 13px;
-  line-height: 1.3;
-}
-
-.md h1.md-h {
-  font-size: 14px;
-}
-
-.md ul,
-.md ol {
-  padding-left: 18px;
-}
-
-.md ul {
-  list-style: disc;
-}
-
-.md ul ul {
-  list-style: circle;
-}
-
-.md li > p {
-  margin: 0;
-}
-
-.md li.md-task {
-  list-style: none;
-  margin-left: -16px;
-  display: flex;
-  gap: 5px;
-}
-
-.md-check {
-  flex: none;
-  width: 12px;
-  height: 12px;
-  margin-top: 2px;
-  border: 1px solid var(--muted);
-  border-radius: 3px;
-  font-size: 9px;
-  line-height: 10px;
-  text-align: center;
-}
-
-.md-check.done {
-  border-color: var(--ready);
-  background: var(--ready);
-  color: #fff;
-}
-
-.md code {
-  padding: 0 4px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--text) 8%, transparent);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
-}
-
-.md-code {
-  border-radius: 8px;
-  background: #1f1b18;
-  color: #f4eee8;
-  overflow: hidden;
-}
-
-.md-code-head {
-  display: flex;
-  align-items: center;
-  padding: 3px 4px 0 9px;
-  font-size: 10px;
-  color: #b3a89f;
-}
-
-.md-code-lang {
-  flex: 1;
-}
-
-.md-code-copy {
-  padding: 1px 7px;
-  border: 0;
-  border-radius: 5px;
-  background: rgba(255, 255, 255, 0.08);
-  color: #f4eee8;
-  font-size: 10px;
-}
-
-.md-code-copy:hover {
-  background: rgba(255, 255, 255, 0.18);
-}
-
-.md-code pre {
-  margin: 0;
-  padding: 4px 9px 8px;
-  overflow-x: auto;
-  white-space: pre;
-}
-
-.md-code code {
-  padding: 0;
-  background: none;
-  color: inherit;
-}
-
-.md blockquote {
-  padding-left: 8px;
-  border-left: 3px solid var(--border);
-  color: var(--muted);
-}
-
-.md hr {
-  border: 0;
-  border-top: 1px solid var(--border);
-  margin: 8px 0;
-}
-
-.md-link {
-  color: var(--accent);
-  text-decoration: underline;
-  cursor: pointer;
-  word-break: break-all;
-}
-
-.md-table {
-  overflow-x: auto;
-}
-
-.md table {
-  border-collapse: collapse;
-  font-size: 11px;
-}
-
-.md th,
-.md td {
-  padding: 3px 7px;
-  border: 1px solid var(--border);
-  text-align: left;
-}
-
-.md th {
-  background: color-mix(in srgb, var(--text) 5%, transparent);
-}
-
-.msg.user .msg-files,
-.msg .msg-files {
-  display: block;
-  margin-top: 4px;
-  font-size: 10px;
-  opacity: 0.85;
-}
-
-/* ------------------------------------------------------------------ composer attachments */
-
-.attachments {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-bottom: 6px;
-}
-
-.attachment {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  max-width: 100%;
-  padding: 1px 2px 1px 7px;
-  border-radius: 6px;
-  background: var(--surface-2);
-  font-size: 11px;
-}
-
-.attachment-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.attachment-remove {
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: 0;
-  border-radius: 5px;
-  background: none;
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.attachment-remove:hover {
-  background: var(--border);
 }
 
 /* ------------------------------------------------------------------ tools: timer / memo / calendar */
@@ -1596,4 +1720,33 @@ textarea.memo-edit:focus {
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ code blocks: copy button */
+
+.md .md-code {
+  position: relative;
+  margin: 0 0 8px;
+}
+
+.md .md-code pre {
+  margin: 0;
+}
+
+.md-code-copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 10px;
+  opacity: 0.85;
+}
+
+.md-code-copy:hover {
+  color: var(--text);
+  opacity: 1;
 }

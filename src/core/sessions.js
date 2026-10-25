@@ -34,6 +34,41 @@ function toolDetail(e) {
   return e.tool ? `${e.tool_name}: ${e.tool}` : e.tool_name;
 }
 
+function newSession(id, cwd, ts, extra = {}) {
+  return {
+    id,
+    cwd: cwd || '',
+    project: cwd ? path.basename(cwd) : id.slice(0, 8),
+    title: null,
+    source: 'cli',
+    entrypoint: null,
+    url: null, // cloud and browser sessions open here instead of in a terminal
+    status: 'idle',
+    activity: null,
+    detail: null,
+    prompt: null,
+    firstPrompt: null,
+    message: null,
+    error: null,
+    unread: false,
+    waitingTool: null,
+    subagents: 0,
+    backgroundTasks: 0,
+    stale: false,
+    history: false,
+    startedAt: ts,
+    updatedAt: ts,
+    lastTs: 0,
+    turnStartedAt: null, // when the current prompt was sent
+    lastDuration: null, // how long the last finished turn took
+    files: [], // files Claude changed in this turn
+    todos: [], // Claude's to-do list: { id, text, active, status }
+    paused: false,
+    pauseRequested: false,
+    ...extra,
+  };
+}
+
 /** Status as the pet shows it: a ready session that was already seen counts as idle. */
 function effectiveStatus(session) {
   if (session.status === 'ready' && !session.unread) return 'idle';
@@ -65,41 +100,20 @@ class SessionTracker extends EventEmitter {
 
     const id = e.session_id;
     if (e.event === 'SessionEnd') {
-      if (this.sessions.delete(id)) this.emit('change');
+      const ended = this.sessions.get(id);
+      // a cloud session ends when its container stops; it stays listed, to be opened in the app
+      if (ended && ended.source === 'cloud' && ended.url) {
+        this.setIdle(ended);
+        ended.history = true;
+        this.emit('change');
+      } else if (this.sessions.delete(id)) this.emit('change');
       return null;
     }
 
     const ts = Number.isFinite(e.ts) ? e.ts : this.now();
     let s = this.sessions.get(id);
     if (!s) {
-      s = {
-        id,
-        cwd: e.cwd || '',
-        project: e.cwd ? path.basename(e.cwd) : id.slice(0, 8),
-        title: null,
-        source: e.source || 'cli',
-        entrypoint: e.entrypoint || null,
-        status: 'idle',
-        activity: null,
-        detail: null,
-        prompt: null,
-        message: null,
-        error: null,
-        unread: false,
-        waitingTool: null,
-        subagents: 0,
-        backgroundTasks: 0,
-        stale: false,
-        startedAt: ts,
-        updatedAt: ts,
-        lastTs: 0,
-        turnStartedAt: null, // when the current prompt was sent
-        lastDuration: null, // how long the last finished turn took
-        files: [], // files Claude changed in this turn
-        todos: [], // Claude's to-do list: { id, text, active, status }
-        paused: false,
-        pauseRequested: false,
-      };
+      s = newSession(id, e.cwd, ts, { source: e.source || 'cli', entrypoint: e.entrypoint || null });
       this.sessions.set(id, s);
     }
 
@@ -108,11 +122,13 @@ class SessionTracker extends EventEmitter {
     s.lastTs = ts;
     s.updatedAt = this.now();
     s.stale = false;
+    s.history = false;
     if (e.cwd) {
       s.cwd = e.cwd;
       s.project = path.basename(e.cwd);
     }
     if (e.title) s.title = e.title;
+    if (typeof e.url === 'string' && /^https:\/\/claude\.ai\//.test(e.url)) s.url = e.url;
     if (e.permission_mode) s.permissionMode = e.permission_mode;
 
     const before = { status: s.status, unread: s.unread };
@@ -140,6 +156,7 @@ class SessionTracker extends EventEmitter {
       case 'UserPromptSubmit':
         this.setRunning(s, 'thinking', null);
         s.prompt = e.prompt || null;
+        if (!s.firstPrompt) s.firstPrompt = s.prompt;
         s.message = null;
         s.error = null;
         s.unread = false;
@@ -339,12 +356,37 @@ class SessionTracker extends EventEmitter {
   }
 
   /** Expire sessions whose hooks went quiet (crashed terminals, interrupted turns). */
+  /**
+   * Add past conversations (from Claude Code's transcripts) as idle, already-read sessions.
+   * Live sessions are never overwritten.
+   */
+  seed(list) {
+    let added = false;
+    for (const h of list || []) {
+      if (!h || !h.id || this.sessions.has(h.id)) continue;
+      // `claude -p` runs (entrypoint sdk-cli) are the pet's quick chats
+      const source = h.source || (h.entrypoint === 'sdk-cli' ? 'quickchat' : 'cli');
+      const s = newSession(h.id, h.cwd, h.updatedAt, { history: true, source, entrypoint: h.entrypoint || null });
+      if (typeof h.url === 'string' && /^https:\/\/claude\.ai\//.test(h.url)) s.url = h.url;
+      Object.assign(s, {
+        title: h.title || null,
+        prompt: h.prompt || null,
+        firstPrompt: h.firstPrompt || h.prompt || null,
+        message: h.message || null,
+      });
+      this.sessions.set(h.id, s);
+      added = true;
+    }
+    if (added) this.emit('change');
+    return added;
+  }
+
   prune() {
     const now = this.now();
     let changed = false;
     for (const [id, s] of this.sessions) {
       const quiet = now - s.updatedAt;
-      if (quiet > this.expireMs) {
+      if (quiet > this.expireMs && !s.history) {
         this.sessions.delete(id);
         changed = true;
       } else if ((s.status === 'running' || s.status === 'waiting') && quiet > this.staleMs) {

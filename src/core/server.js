@@ -1,7 +1,8 @@
 'use strict';
 
 // Local HTTP endpoint for hook events and CLI commands. It binds to 127.0.0.1
-// only and refuses browser requests, so web pages can't drive the pet.
+// only and refuses browser requests, so web pages can't drive the pet. The one
+// exception is the claude.ai browser extension, which may report events only.
 
 const http = require('http');
 const { sign } = require('./permissions');
@@ -44,26 +45,41 @@ function readBody(req) {
   });
 }
 
+const EXTENSION_ORIGIN = /^(chrome|moz)-extension:\/\/[\w-]+$/;
+
 function allowedHost(header, port) {
   return header === `127.0.0.1:${port}` || header === `localhost:${port}`;
 }
 
 /**
  * Start the server. Handlers:
- *   onEvent(event)        hook event from pet-hook.js
+ *   onEvent(event, meta)  hook event from pet-hook.js; meta.fromExtension for the browser extension
  *   onControl(command)    { action, value } from the CLI; may return a JSON-able result
  *   getStatus()           snapshot for `claude-pet status`
  *   onPermission(event, { signal })
  *                         optional; resolves to { behavior: 'allow' | 'deny' } or null (no decision).
  *                         Decisions are signed with `secret` so the hook can trust them.
  */
-function startServer({ port, onEvent, onControl, getStatus, onPermission = null, secret = null, version = '0.0.0' }) {
+function startServer({
+  port,
+  onEvent,
+  onControl,
+  getStatus,
+  onPermission = null,
+  secret = null,
+  version = '0.0.0',
+  build = null,
+}) {
   const server = http.createServer(async (req, res) => {
-    if (req.headers.origin || !allowedHost(req.headers.host, port)) return send(res, 403, { error: 'forbidden' });
-
     const url = req.url.split('?')[0];
+    const { origin } = req.headers;
+    const fromExtension = typeof origin === 'string' && EXTENSION_ORIGIN.test(origin);
+    if ((origin && !(fromExtension && req.method === 'POST' && url === '/event')) || !allowedHost(req.headers.host, port)) {
+      return send(res, 403, { error: 'forbidden' });
+    }
+
     try {
-      if (req.method === 'GET' && url === '/health') return send(res, 200, { ok: true, app: 'claude-pet', version });
+      if (req.method === 'GET' && url === '/health') return send(res, 200, { ok: true, app: 'claude-pet', version, build });
       if (req.method === 'GET' && url === '/status') return send(res, 200, getStatus());
 
       if (req.method === 'POST' && (url === '/event' || url === '/control' || url === '/permission')) {
@@ -72,7 +88,7 @@ function startServer({ port, onEvent, onControl, getStatus, onPermission = null,
         }
         const body = await readBody(req);
         if (url === '/event') {
-          onEvent(body);
+          onEvent(body, { fromExtension });
           return send(res, 204);
         }
         if (url === '/permission') {

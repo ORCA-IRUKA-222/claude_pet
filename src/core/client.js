@@ -38,13 +38,18 @@ function request(method, urlPath, body, { timeout = 2000 } = {}) {
   });
 }
 
-async function isRunning() {
+/** The running pet's /health answer, or null when it isn't running. */
+async function health() {
   try {
     const res = await request('GET', '/health', undefined, { timeout: 800 });
-    return res.status === 200 && res.json && res.json.app === 'claude-pet';
+    return res.status === 200 && res.json && res.json.app === 'claude-pet' ? res.json : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+async function isRunning() {
+  return Boolean(await health());
 }
 
 async function control(action, value) {
@@ -58,4 +63,4 @@ async function status() {
   return res.json;
 }
 
-module.exports = { request, isRunning, control, status };
+module.exports = { request, health, isRunning, control, status };

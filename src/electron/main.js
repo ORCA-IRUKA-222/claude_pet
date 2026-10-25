@@ -23,12 +23,14 @@ const {
 } = require('electron');
 
 const { APP_ROOT, getPort, homeDir, loadConfig, saveConfig, ensureSecret, permissionTimeoutMs } = require('../shared/config');
-const { translator } = require('../shared/i18n');
+const { translator, formatMinutes } = require('../shared/i18n');
 const { SessionTracker } = require('../core/sessions');
 const { startServer } = require('../core/server');
 const { listPets, findPet } = require('../core/pets');
-const { QuickChat, validAttachments, withAttachments } = require('../core/quickchat');
-const { openInTerminal } = require('../core/terminal');
+const { QuickChat, CLOUD_ID, modelArgs } = require('../core/quickchat');
+const { recentSessions, findTranscript, readConversation } = require('../core/history');
+const rotation = require('../core/rotation');
+const { openInTerminal, openCloudTask } = require('../core/terminal');
 const { openInEditor } = require('../core/editor');
 const { TimeKeeper } = require('../core/timers');
 const { Modes } = require('../core/modes');
@@ -37,18 +39,27 @@ const { CalendarFeed } = require('../core/calendar');
 const { PermissionBroker } = require('../core/permissions');
 const { requestPause, cancelPause } = require('../shared/pause');
 const installer = require('../core/installer');
+const autostart = require('../core/autostart');
+const { findClaude, isClaudeExecutable } = require('../core/claude-path');
+const { RelayListener } = require('../core/relay');
+const { loadCloudSessions, saveCloudSessions } = require('../core/cloud-store');
+const { cloneRepo, remember, listGitHubRepos, isCloned } = require('../core/repos');
 const { version } = require('../../package.json');
+const { buildId } = require('../shared/build');
 
 const SCALES = { small: 0.5, medium: 0.75, large: 1 };
 const DND_MINUTES = [30, 60, 120];
 const TURN_OVER = new Set(['UserPromptSubmit', 'Stop', 'StopFailure', 'SessionEnd']);
 const MAX_SCREENSHOTS = 20;
+const ROTATION_INTERVALS = [15, 30, 60, 120, 180];
 
 const config = loadConfig();
 let t = translator(config.language);
 let win = null;
 let tray = null;
 let pet = null;
+let startsAtLogin = false;
+let relay = null; // cloud sessions, see src/core/relay.js
 let anchor = null; // bottom-centre of the pet, in screen coordinates
 let drag = null;
 let saveTimer = null;
@@ -57,12 +68,68 @@ let awayCause = null; // 'idle' | 'lock' | 'sleep'
 const power = { locked: false, suspended: false };
 
 const tracker = new SessionTracker({ staleMs: config.staleMinutes * 60e3 });
+// The pet asks the strongest model by default; weaker ones only if chosen in the menu.
+const MODELS = [
+  ['claude-opus-5-5', 'Opus 5.5'],
+  ['claude-fable-5-1', 'Fable 5.1'],
+  ['claude-sonnet-5-5', 'Sonnet 5.5'],
+];
+const EFFORT_LEVELS = ['medium', 'high', 'xhigh', 'max'];
+const currentModel = () => config.quickChat.model || MODELS[0][0];
+const currentEffort = () => config.quickChat.effort || 'xhigh';
+
+const claudeCommand = () => findClaude({ configured: config.claudePath, learned: config.learnedClaudePath });
 const quickChat = new QuickChat({
-  claudePath: config.claudePath,
+  claudePath: claudeCommand,
   permissionMode: config.quickChat.permissionMode,
-  model: config.quickChat.model,
+  model: currentModel(),
+  effort: currentEffort(),
 });
-quickChat.on('event', (ev) => sendToRenderer('quick-event', ev));
+
+/** --model / --effort for a Claude Code the pet starts in a terminal. */
+const terminalModelArgs = () => modelArgs({ model: currentModel(), effort: quickChat.noEffort ? null : currentEffort() });
+
+function setModel(changes) {
+  persist({ quickChat: { ...config.quickChat, ...changes } });
+  quickChat.model = currentModel();
+  quickChat.effort = currentEffort();
+  sendToRenderer('config', rendererConfig());
+}
+quickChat.on('event', (ev) => {
+  sendToRenderer('quick-event', ev);
+  quickChatToApp(ev);
+  if (ev.type === 'interactive-only') {
+    pendingCloudTasks.push({ prompt: ev.prompt, at: Date.now() });
+    const opts = { cwd: ev.cwd, claudePath: claudeCommand(), task: ev.prompt, extraArgs: terminalModelArgs() };
+    openCloudTask({ ...opts, template: config.terminalCommand }).catch((err) =>
+      sendToRenderer('quick-event', { type: 'error', message: err.message }),
+    );
+  }
+});
+
+// Cloud tasks started in a terminal, waiting to learn their cloud session from the relay so
+// the quick chat can send follow-ups to it (claude -p --cloud <session>).
+const pendingCloudTasks = [];
+const sameStart = (a, b) => {
+  const norm = (s) =>
+    String(s || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/…$/, '');
+  const x = norm(a);
+  const y = norm(b);
+  const n = Math.min(x.length, y.length, 60);
+  return n > 0 && x.slice(0, n) === y.slice(0, n);
+};
+
+function linkCloudTask(event) {
+  if (event.event !== 'UserPromptSubmit' || typeof event.url !== 'string') return;
+  const m = /\/code\/(session_[A-Za-z0-9]+)$/.exec(event.url);
+  const i = pendingCloudTasks.findIndex((p) => Date.now() - p.at < 30 * 60e3 && sameStart(p.prompt, event.prompt));
+  if (!m || i < 0) return;
+  const [task] = pendingCloudTasks.splice(i, 1);
+  sendToRenderer('quick-event', { type: 'cloud-linked', prompt: task.prompt, cloudSessionId: m[1], url: event.url });
+}
 
 const timeKeeper = new TimeKeeper({ pomodoro: config.pomodoro });
 const modes = new Modes({ dnd: config.dnd });
@@ -80,9 +147,10 @@ function sendToRenderer(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
 }
 
-function petForRenderer(p) {
+function petForRenderer(p, announce = false) {
   if (!p) return null;
   return {
+    announce,
     key: p.key,
     displayName: p.displayName,
     kind: p.kind,
@@ -93,6 +161,13 @@ function petForRenderer(p) {
     cellHeight: p.cellHeight,
     rows: p.rows,
     pixelArt: p.pixelArt,
+    displayHeight: p.displayHeight || null,
+    states: Object.fromEntries(
+      Object.entries(p.states || {}).map(([state, info]) => [
+        state,
+        { url: pathToFileURL(info.file).href, width: info.width, height: info.height },
+      ]),
+    ),
   };
 }
 
@@ -103,6 +178,9 @@ function rendererConfig() {
     showBubble: config.showBubble,
     language: config.language,
     quickChatCwd: config.quickChat.cwd || app.getPath('home'),
+    quickChatTarget: config.quickChat.target || 'local',
+    quickChatModel: (MODELS.find(([id]) => id === currentModel()) || [null, currentModel()])[1],
+    quickChatEffort: currentEffort(),
     home: app.getPath('home'),
     greetings: config.greetings !== false,
     permissionPrompt: config.permissionPrompt.enabled !== false,
@@ -215,12 +293,12 @@ function setMini(mini) {
   updateTray();
 }
 
-function setPet(key) {
+function setPet(key, { announce = false } = {}) {
   const next = findPet(key);
   if (!next) return null;
   pet = next;
   persist({ pet: next.key });
-  sendToRenderer('pet', petForRenderer(pet));
+  sendToRenderer('pet', petForRenderer(pet, announce));
   updateTray();
   return pet;
 }
@@ -253,10 +331,60 @@ function saveDnd() {
   });
 }
 
+/** A pet picked by hand stays for a full interval before the rotation moves on. */
+function choosePet(key) {
+  const chosen = setPet(key);
+  if (chosen) persist({ rotation: { ...config.rotation, lastChangedAt: Date.now() } });
+  return chosen;
+}
+
+// ---------------------------------------------------------------- rotation
+
+function rotationCandidates() {
+  return rotation.candidates(listPets(), config.rotation);
+}
+
+function rotateNow() {
+  const { next, queue } = rotation.pickNext(rotationCandidates(), pet && pet.key, {
+    order: rotation.normalizeOrder(config.rotation.order),
+    queue: config.rotation.queue,
+  });
+  persist({ rotation: { ...config.rotation, queue, lastChangedAt: Date.now() } });
+  return next ? setPet(next, { announce: true }) : null;
+}
+
+function checkRotation() {
+  if (rotation.isDue(config.rotation)) rotateNow();
+}
+
+function updateRotation(patch) {
+  const before = config.rotation;
+  const next = { ...before, ...patch };
+  if (patch.group !== undefined || patch.pets !== undefined) next.queue = [];
+  persist({ rotation: next });
+  if (next.enabled) {
+    const keys = rotationCandidates();
+    // Switching the rotation on (or to another group) brings in a pet from that set right away.
+    if (!before.enabled || !keys.includes(pet && pet.key)) rotateNow();
+  }
+  updateTray();
+  return rotationStatus();
+}
+
+function rotationStatus() {
+  return { rotation: config.rotation, count: rotationCandidates().length, pet: pet && pet.key, petName: pet && pet.displayName };
+}
+
 // ---------------------------------------------------------------- menus
 
 function buildMenu() {
   const pets = listPets();
+  const petItem = (p) => ({
+    label: `${p.displayName}${p.origin === 'builtin' || p.origin === 'custom' ? '' : `  (${p.origin})`}`,
+    type: 'radio',
+    checked: Boolean(pet && p.key === pet.key),
+    click: () => choosePet(p.key),
+  });
   const scaleKey = Object.keys(SCALES).find((k) => SCALES[k] === config.scale) || 'small';
   const visible = Boolean(win && win.isVisible());
   const dnd = modes.snapshot().dnd;
@@ -289,15 +417,44 @@ function buildMenu() {
     {
       label: t('menu.pets'),
       submenu: [
-        ...pets.map((p) => ({
-          label: `${p.displayName}${p.origin === 'builtin' ? '' : `  (${p.origin})`}`,
-          type: 'radio',
-          checked: pet && p.key === pet.key,
-          click: () => setPet(p.key),
-        })),
+        ...pets.filter((p) => !p.group).map(petItem),
+        ...rotation.groups(pets).map((group) => ({ label: group, submenu: pets.filter((p) => p.group === group).map(petItem) })),
         { type: 'separator' },
         { label: t('menu.reloadPets'), click: () => setPet(config.pet) },
         { label: t('menu.openPetsFolder'), click: () => openPetsFolder() },
+      ],
+    },
+    {
+      label: t('menu.rotation'),
+      submenu: [
+        {
+          label: t('menu.rotation.enabled'),
+          type: 'checkbox',
+          checked: config.rotation.enabled,
+          click: (item) => updateRotation({ enabled: item.checked }),
+        },
+        { label: t('menu.rotation.next'), click: () => rotateNow() },
+        { type: 'separator' },
+        ...ROTATION_INTERVALS.map((minutes) => ({
+          label: t('menu.rotation.every', { label: formatMinutes(t, minutes) }),
+          type: 'radio',
+          checked: Number(config.rotation.intervalMinutes) === minutes,
+          click: () => updateRotation({ intervalMinutes: minutes }),
+        })),
+        { type: 'separator' },
+        { label: t('menu.rotation.target'), enabled: false },
+        {
+          label: t('menu.rotation.all'),
+          type: 'radio',
+          checked: !config.rotation.group && !(config.rotation.pets || []).length,
+          click: () => updateRotation({ group: null, pets: [] }),
+        },
+        ...rotation.groups(pets).map((group) => ({
+          label: group,
+          type: 'radio',
+          checked: config.rotation.group === group && !(config.rotation.pets || []).length,
+          click: () => updateRotation({ group, pets: [] }),
+        })),
       ],
     },
     {
@@ -357,6 +514,36 @@ function buildMenu() {
       },
     },
     {
+      label: t('menu.model'),
+      submenu: [
+        ...MODELS.map(([id, label]) => ({
+          label,
+          type: 'radio',
+          checked: currentModel() === id,
+          click: () => setModel({ model: id }),
+        })),
+        { type: 'separator' },
+        ...EFFORT_LEVELS.map((level) => ({
+          label: t('menu.effort', { level: t(`effort.${level}`) }),
+          type: 'radio',
+          checked: currentEffort() === level,
+          click: () => setModel({ effort: level }),
+        })),
+      ],
+    },
+    {
+      label: t('menu.quickChatToApp'),
+      type: 'checkbox',
+      checked: Boolean(config.quickChat.openInApp),
+      click: (item) => persist({ quickChat: { ...config.quickChat, openInApp: item.checked } }),
+    },
+    {
+      label: t('menu.autostart'),
+      type: 'checkbox',
+      checked: startsAtLogin,
+      click: (item) => setAutostart(item.checked),
+    },
+    {
       label: t('menu.language'),
       submenu: [
         ['ja', '日本語'],
@@ -381,6 +568,121 @@ function buildMenu() {
   ]);
 }
 
+function learnClaudePath(file) {
+  if (!file || file === config.learnedClaudePath || !isClaudeExecutable(file)) return;
+  persist({ learnedClaudePath: file });
+}
+
+// ---------------------------------------------------------------- Claude desktop app
+
+const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const openedInApp = new Set();
+
+/** The same link `claude --desktop --resume <id>` opens, without needing a console. */
+async function openInApp(sessionId) {
+  if (!SESSION_UUID.test(String(sessionId || ''))) throw new Error('invalid session id');
+  openedInApp.add(sessionId);
+  await shell.openExternal(`claude://resume?session=${sessionId}`);
+}
+
+/** With quickChat.openInApp on, a new quick chat also opens in the app once it has its first reply. */
+function quickChatToApp(ev) {
+  if (!config.quickChat.openInApp || ev.type !== 'done' || !ev.sessionId || openedInApp.has(ev.sessionId)) return;
+  openInApp(ev.sessionId).catch(() => {});
+}
+
+// ---------------------------------------------------------------- cloud sessions
+
+let cloudSaveTimer = null;
+// What each cloud session said, as far as the relay carried it (prompts and final replies):
+// the pet shows this when a cloud session is opened in it.
+const cloudLogs = new Map();
+const cloudIdOf = (url) => (/\/code\/(session_[A-Za-z0-9]+)/.exec(String(url || '')) || [])[1] || null;
+
+function appendCloudLog(e) {
+  const role = e.event === 'UserPromptSubmit' ? 'user' : e.event === 'Stop' ? 'assistant' : null;
+  const text = role === 'user' ? e.prompt : e.message;
+  if (!role || typeof text !== 'string' || !text.trim()) return;
+  const log = cloudLogs.get(e.session_id) || [];
+  const last = log[log.length - 1];
+  if (last && last.role === role && last.text === text) return; // the same event again
+  log.push({ role, text });
+  cloudLogs.set(e.session_id, log.slice(-40));
+  sendToRenderer('quick-event', { type: 'cloud-message', cloudId: cloudIdOf(e.url), role, text });
+}
+
+/** Remember the cloud sessions in the list, so they are back after a restart. */
+function saveCloudSoon() {
+  clearTimeout(cloudSaveTimer);
+  cloudSaveTimer = setTimeout(() => {
+    try {
+      const sessions = tracker.list().map((s) => (s.source === 'cloud' ? { ...s, messages: cloudLogs.get(s.id) || [] } : s));
+      saveCloudSessions(sessions, relay ? relay.lastId : loadCloudSessions().lastId);
+    } catch (err) {
+      console.error('[claude-pet] cloud sessions:', err.message);
+    }
+  }, 2000);
+}
+
+function startRelay() {
+  if (relay) relay.stop();
+  relay = null;
+  const { enabled, server, topic, key } = config.cloud || {};
+  if (!enabled || !topic || !key) return;
+  const stored = loadCloudSessions();
+  tracker.seed(stored.sessions.map((s) => ({ ...s, source: 'cloud' })));
+  for (const s of stored.sessions) if (Array.isArray(s.messages) && !cloudLogs.has(s.id)) cloudLogs.set(s.id, s.messages);
+  relay = new RelayListener({ server, topic, key, lastId: stored.lastId });
+  relay.on('event', (event) => {
+    // the list shows a preview; the whole text is kept for the conversation view
+    const preview =
+      typeof event.message === 'string' && event.message.length > 4000 ? `${event.message.slice(0, 3999)}…` : event.message;
+    tracker.handle({ ...event, message: preview, source: 'cloud' });
+    appendCloudLog(event);
+    linkCloudTask(event);
+    saveCloudSoon();
+  });
+  relay.start();
+}
+
+function cloudStatus() {
+  const { enabled, server, topic } = config.cloud || {};
+  return { cloud: { enabled: Boolean(enabled), server, topic, connection: relay ? relay.status : 'stopped' } };
+}
+
+function updateCloud(patch) {
+  const allowed = ['enabled', 'server', 'topic', 'key'];
+  const changes = Object.fromEntries(Object.entries(patch).filter(([k]) => allowed.includes(k)));
+  persist({ cloud: { ...config.cloud, ...changes } });
+  startRelay();
+  return cloudStatus();
+}
+
+// ---------------------------------------------------------------- start at sign-in
+
+const autostartOptions = () => ({ electron: process.execPath, appRoot: APP_ROOT });
+
+function readAutostart() {
+  try {
+    startsAtLogin = autostart.isEnabled(autostartOptions());
+  } catch {
+    startsAtLogin = false;
+  }
+  return { autostart: startsAtLogin };
+}
+
+function setAutostart(on) {
+  try {
+    if (on) autostart.enable(autostartOptions());
+    else autostart.disable(autostartOptions());
+  } catch (err) {
+    console.error('[claude-pet] autostart:', err.message);
+  }
+  const result = readAutostart();
+  updateTray();
+  return result;
+}
+
 function trayIcon() {
   const icon = nativeImage.createFromPath(path.join(APP_ROOT, 'assets', 'tray.png'));
   if (process.platform === 'darwin') icon.setTemplateImage(false);
@@ -391,9 +693,10 @@ function updateTray() {
   if (!tray) return;
   const agg = tracker.aggregate();
   const attention = agg.counts.waiting + agg.counts.failed + agg.counts.ready;
+  const name = pet ? `${pet.displayName} — ` : '';
   const mode = modes.snapshot();
   const modeText = mode.dnd ? ` · ${t('mode.dnd')}` : mode.focus ? ` · ${t('mode.focus')}` : '';
-  tray.setToolTip(`Claude Pet — ${t(`status.${agg.status}`)}${attention ? ` (${attention})` : ''}${modeText}`);
+  tray.setToolTip(`Claude Pet — ${name}${t(`status.${agg.status}`)}${attention ? ` (${attention})` : ''}${modeText}`);
   if (process.platform === 'darwin') tray.setTitle(attention ? String(attention) : '');
   tray.setContextMenu(buildMenu());
 }
@@ -674,7 +977,7 @@ async function handleControl({ action, value }) {
       openQuickChat();
       return {};
     case 'set-pet': {
-      const p = setPet(String(value || ''));
+      const p = choosePet(String(value || ''));
       if (!p) throw Object.assign(new Error('pet not found'), { status: 404 });
       return { pet: p.key };
     }
@@ -700,6 +1003,16 @@ async function handleControl({ action, value }) {
     }
     case 'screenshot':
       return askAboutScreenshot();
+    case 'next': {
+      const p = rotateNow();
+      return { pet: p ? p.key : null, petName: p ? p.displayName : null };
+    }
+    case 'rotation':
+      return value && typeof value === 'object' ? updateRotation(value) : rotationStatus();
+    case 'autostart':
+      return typeof value === 'boolean' ? setAutostart(value) : readAutostart();
+    case 'cloud':
+      return value && typeof value === 'object' ? updateCloud(value) : cloudStatus();
     case 'quit':
       setTimeout(quit, 50);
       return {};
@@ -751,38 +1064,163 @@ function registerIpc() {
   ipcMain.on('mark-all-read', () => tracker.markAllRead());
   ipcMain.on('dismiss', (_e, id) => tracker.dismiss(String(id)));
   ipcMain.on('copy', (_e, text) => clipboard.writeText(String(text || '')));
-  ipcMain.on('open-external', (_e, url) => {
-    if (typeof url === 'string' && /^https?:\/\//i.test(url)) shell.openExternal(url);
+  // a link in one of Claude's replies: web pages only
+  ipcMain.on('open-link', (_e, url) => {
+    try {
+      const u = new URL(String(url));
+      if (u.protocol === 'https:' || u.protocol === 'http:') shell.openExternal(u.toString());
+    } catch {
+      // not a URL
+    }
   });
 
-  ipcMain.handle('open-terminal', async (_e, { sessionId, cwd }) => {
+  ipcMain.on('open-url', (_e, url, inApp) => {
+    // only conversations on claude.ai: cloud sessions and browser chats
+    if (typeof url !== 'string' || !/^https:\/\/claude\.ai\/[\w/.?=&-]*$/.test(url)) return;
+    if (!inApp) return void shell.openExternal(url);
+    // the desktop app opens claude.ai pages from claude://claude.ai/<path>, as Claude Code does
+    shell.openExternal(url.replace(/^https:\/\//, 'claude://')).catch(() => shell.openExternal(url));
+  });
+
+  ipcMain.handle('open-desktop', async (_e, { sessionId }) => {
     try {
-      await openInTerminal({ sessionId, cwd, claudePath: config.claudePath, template: config.terminalCommand });
+      await openInApp(sessionId);
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err.message };
     }
   });
 
-  ipcMain.handle('quick-send', (_e, { prompt, cwd, resume, attachments }) => {
+  // a past conversation, to continue it in the quick chat
+  ipcMain.handle('open-chat', (_e, sessionId) => {
+    // a cloud session: what the relay carried, and its claude.ai session to send follow-ups to
+    const cloud = tracker.list().find((s) => s.id === sessionId && s.source === 'cloud');
+    if (cloud) {
+      const cloudId = cloudIdOf(cloud.url);
+      if (!cloudId) return { ok: false, error: t('ui.chatNotFound') };
+      const fallback = [
+        ...(cloud.prompt ? [{ role: 'user', text: cloud.prompt }] : []),
+        ...(cloud.message ? [{ role: 'assistant', text: cloud.message }] : []),
+      ];
+      const log = cloudLogs.get(sessionId);
+      return { ok: true, cloud: true, cloudId, url: cloud.url, messages: log && log.length ? log : fallback };
+    }
+    const file = findTranscript(String(sessionId || ''));
+    if (!file) return { ok: false, error: t('ui.chatNotFound') };
+    return { ok: true, sessionId, ...readConversation(file) };
+  });
+
+  ipcMain.handle('open-terminal', async (_e, { sessionId, cwd, cloudId }) => {
     try {
-      const files = validAttachments(attachments);
-      const { prompt: full, addDirs } = withAttachments(String(prompt || ''), files, t('ui.attachedFiles'));
-      const { cwd: used } = quickChat.send({ prompt: full, cwd, resume, addDirs });
-      persist({ quickChat: { ...config.quickChat, cwd: used } });
-      return { ok: true, cwd: used };
+      // a cloud task attaches to its cloud session interactively
+      const args = CLOUD_ID.test(String(cloudId || ''))
+        ? ['--cloud', cloudId]
+        : [...(sessionId ? ['--resume', sessionId] : []), ...terminalModelArgs()];
+      await openInTerminal({ sessionId, cwd, claudePath: claudeCommand(), template: config.terminalCommand, args });
+      return { ok: true };
     } catch (err) {
       return { ok: false, error: err.message };
     }
   });
+
+  ipcMain.handle('quick-send', (_e, { prompt, cwd, resume, cloud, files }) => {
+    try {
+      const { cwd: used } = quickChat.send({ prompt, cwd, resume, cloud: Boolean(cloud), files });
+      persist({ quickChat: { ...config.quickChat, cwd: used, recent: remember(config.quickChat.recent, used) } });
+      return { ok: true, cwd: used };
+    } catch (err) {
+      return { ok: false, error: err.code === 'CLAUDE_NOT_FOUND' ? t('error.claudeNotFound') : err.message };
+    }
+  });
   ipcMain.on('quick-stop', () => quickChat.stop());
+
+  ipcMain.handle('choose-files', async () => {
+    const result = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'] });
+    return result.canceled ? [] : result.filePaths;
+  });
+
+  // an image pasted into the input: kept as a file Claude Code can read
+  ipcMain.handle('save-pasted', (_e, data, type) => {
+    const ext = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' }[type];
+    if (!ext || !(data instanceof Uint8Array) || data.length > 20 * 1024 * 1024) return null;
+    const dir = path.join(homeDir(), 'attachments');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `pasted-${new Date().toISOString().replace(/[:.]/g, '-')}.${ext}`);
+    fs.writeFileSync(file, data);
+    return file;
+  });
 
   ipcMain.handle('choose-folder', async (_e, current) => {
     const result = await dialog.showOpenDialog(win, {
       defaultPath: current || app.getPath('home'),
       properties: ['openDirectory'],
     });
-    return result.canceled ? null : result.filePaths[0];
+    if (result.canceled) return null;
+    persist({ quickChat: { ...config.quickChat, recent: remember(config.quickChat.recent, result.filePaths[0]) } });
+    return result.filePaths[0];
+  });
+
+  // where the quick chat works: a recent folder, another folder, or a GitHub repository
+  ipcMain.handle(
+    'folder-menu',
+    (_e, current) =>
+      new Promise((resolve) => {
+        let picked = null;
+        const recent = (config.quickChat.recent || []).filter((d) => fs.existsSync(d));
+        const menu = Menu.buildFromTemplate([
+          ...recent.map((dir) => ({
+            label: dir,
+            type: 'radio',
+            checked: dir === current,
+            click: () => (picked = { dir }),
+          })),
+          ...(recent.length ? [{ type: 'separator' }] : []),
+          { label: t('menu.folder.choose'), click: () => (picked = { choose: true }) },
+          { label: t('menu.folder.github'), click: () => (picked = { clone: true }) },
+        ]);
+        // the click handler runs before the menu-closed callback
+        menu.popup({ window: win, callback: () => setTimeout(() => resolve(picked), 0) });
+      }),
+  );
+
+  // your GitHub repositories to pick from (kept for ten minutes)
+  let repoCache = null;
+  ipcMain.handle('list-repos', async () => {
+    try {
+      if (!repoCache || Date.now() - repoCache.at > 10 * 60e3) repoCache = { at: Date.now(), ...(await listGitHubRepos()) };
+      return { ok: true, repos: repoCache.repos.map((r) => ({ ...r, cloned: isCloned(r.fullName) })) };
+    } catch (err) {
+      repoCache = null;
+      return { ok: false, error: err.code === 'NO_GITHUB' ? t('error.noGitHub') : err.message };
+    }
+  });
+
+  ipcMain.handle('clone-repo', async (_e, text) => {
+    try {
+      const { dir } = await cloneRepo(text);
+      persist({ quickChat: { ...config.quickChat, cwd: dir, recent: remember(config.quickChat.recent, dir) } });
+      return { ok: true, dir };
+    } catch (err) {
+      const known = { BAD_REPO: 'error.badRepo', NO_GIT: 'error.noGit' }[err.code];
+      return { ok: false, error: known ? t(known) : err.message };
+    }
+  });
+
+  ipcMain.on('quick-target', (_e, target) => {
+    if (['local', 'cloud', 'chat'].includes(target)) persist({ quickChat: { ...config.quickChat, target } });
+  });
+
+  // a normal chat: a new conversation in the Claude app, asking the question
+  ipcMain.handle('ask-in-app', async (_e, prompt) => {
+    const q = encodeURIComponent(String(prompt || '').slice(0, 4000));
+    try {
+      await shell.openExternal(`claude://claude.ai/new?q=${q}`);
+      return { ok: true };
+    } catch {
+      // no desktop app: the same page in the browser
+      await shell.openExternal(`https://claude.ai/new?q=${q}`).catch(() => {});
+      return { ok: true, browser: true };
+    }
   });
 
   // Claude Code sessions
@@ -875,9 +1313,18 @@ async function boot() {
     await startServer({
       port: getPort(),
       version,
+      build: buildId(),
       secret,
-      onEvent: handleEvent,
       onPermission: handlePermission,
+      onEvent: (event, { fromExtension } = {}) => {
+        if (!event || typeof event !== 'object') return;
+        // a browser extension only reports claude.ai chats; it never tells where claude is
+        if (fromExtension) tracker.handle({ ...event, claude_path: undefined, source: 'browser' });
+        else {
+          learnClaudePath(event.claude_path);
+          handleEvent(event);
+        }
+      },
       onControl: handleControl,
       getStatus: () => ({ visible: Boolean(win && win.isVisible()), sessions: tracker.list(), aggregate: tracker.aggregate() }),
     });
@@ -888,7 +1335,24 @@ async function boot() {
   }
 
   pet = findPet(config.pet);
+  if (config.rotation.enabled && !rotationCandidates().includes(pet && pet.key)) rotateNow();
+  else checkRotation();
+  // Checked often so the switch happens on time even after the computer wakes from sleep.
+  setInterval(checkRotation, 30e3).unref();
+  readAutostart();
   tracker.on('change', pushState);
+  tracker.on('change', () => relay && saveCloudSoon()); // e.g. a cloud session removed from the list
+  // Past Claude Code conversations, so the list isn't empty before the first hook event.
+  const loadHistory = () => {
+    try {
+      tracker.seed(recentSessions());
+    } catch {
+      // unreadable transcripts shouldn't stop the pet
+    }
+  };
+  loadHistory();
+  setInterval(loadHistory, 10 * 60e3).unref();
+  startRelay();
   tracker.on('transition', notifyTransition);
   permissions.on('change', pushState);
   modes.on('change', () => {
@@ -934,6 +1398,8 @@ if (!app.requestSingleInstanceLock()) {
     quitting = true;
     quickChat.stop();
     permissions.cancelAll();
+    clearTimeout(saveTimer);
+    saveConfig(config);
   });
   app.whenReady().then(() => {
     if (process.platform === 'darwin' && app.dock) app.dock.hide();
