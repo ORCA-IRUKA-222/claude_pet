@@ -412,10 +412,18 @@ async function cloudCommand([action = 'status'] = []) {
         message: 'クラウド中継のテストです。届いていれば、ペット側の設定は正しく動いています。',
       };
       await publish(cloud, seal(event, cloud.key));
-      if (!running) return '☁ 中継サーバーに送りました。ペットを起動すると一覧に出ます';
+      // the test is not a session to keep: it leaves the list once it arrived
+      const end = () => publish(cloud, seal({ event: 'SessionEnd', session_id: id, ts: Date.now(), source: 'cloud' }, cloud.key));
+      if (!running) {
+        await end();
+        return '☁ 中継サーバーに送れました（ペット側の受け取りは、ペットを起動してからもう一度 test で確かめられます）';
+      }
       for (let i = 0; i < 20; i++) {
         const status = await client.status();
-        if (status && status.sessions.some((s) => s.id === id)) return '☁ テストのメッセージがペットに届きました';
+        if (status && status.sessions.some((s) => s.id === id)) {
+          await end();
+          return '☁ テストのメッセージがペットに届きました（テストの行は一覧から消えます）';
+        }
         await new Promise((r) => setTimeout(r, 500));
       }
       return '☁ 中継サーバーには送れましたが、ペットに届きませんでした。claude-pet cloud で状態を確認してください';
