@@ -722,6 +722,16 @@ function registerIpc() {
   ipcMain.on('dismiss', (_e, id) => tracker.dismiss(String(id)));
   ipcMain.on('copy', (_e, text) => clipboard.writeText(String(text || '')));
 
+  // a link in one of Claude's replies: web pages only
+  ipcMain.on('open-link', (_e, url) => {
+    try {
+      const u = new URL(String(url));
+      if (u.protocol === 'https:' || u.protocol === 'http:') shell.openExternal(u.toString());
+    } catch {
+      // not a URL
+    }
+  });
+
   ipcMain.on('open-url', (_e, url, inApp) => {
     // only conversations on claude.ai: cloud sessions and browser chats
     if (typeof url !== 'string' || !/^https:\/\/claude\.ai\/[\w/.?=&-]*$/.test(url)) return;

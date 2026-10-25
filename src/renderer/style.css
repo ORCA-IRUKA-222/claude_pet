@@ -738,6 +738,107 @@ button {
   padding: 0 2px;
   border-radius: 0;
   line-height: 1.6;
+  white-space: normal;
+}
+
+/* Claude's replies, rendered from Markdown */
+.md > :first-child {
+  margin-top: 0;
+}
+
+.md > :last-child {
+  margin-bottom: 0;
+}
+
+.md p,
+.md ul,
+.md ol,
+.md pre,
+.md blockquote,
+.md .md-table {
+  margin: 0 0 8px;
+}
+
+.md ul,
+.md ol {
+  padding-left: 20px;
+}
+
+.md li {
+  margin: 2px 0;
+}
+
+.md li > ul,
+.md li > ol {
+  margin: 2px 0;
+}
+
+.md .md-h {
+  margin: 10px 0 4px;
+  font-weight: 700;
+}
+
+.md .md-h1,
+.md .md-h2 {
+  font-size: 1.12em;
+}
+
+.md code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 0.92em;
+}
+
+.md pre {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.md pre code {
+  padding: 0;
+  background: none;
+}
+
+.md blockquote {
+  padding-left: 10px;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+
+.md hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 10px 0;
+}
+
+.md .md-table {
+  overflow-x: auto;
+}
+
+.md table {
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+
+.md th,
+.md td {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.md th {
+  background: var(--surface-2);
+}
+
+.md a {
+  color: var(--accent);
 }
 
 .msg.error {
@@ -822,4 +923,14 @@ button {
 
 .bubble.toast .dot {
   background: var(--accent);
+}
+
+.session-text .md {
+  white-space: normal;
+}
+
+.session-text .md code,
+.session-text .md pre,
+.session-text .md th {
+  background: var(--surface);
 }

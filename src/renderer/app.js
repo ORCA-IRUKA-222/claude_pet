@@ -53,7 +53,6 @@ const state = {
 let t = PetI18n.translator('ja');
 const SOURCE_MARK = { quickchat: '💬 ', cloud: '☁ ', browser: '🌐 ' };
 const AUTH_ERROR = /authenticat|oauth|\/login|api key/i;
-let choosingFolder = false; // the folder dialog takes focus; keep the quick-chat box open
 
 // ------------------------------------------------------------------ helpers
 
@@ -318,7 +317,7 @@ function renderSessions() {
       if (reply) {
         const box = el('div', 'session-text');
         box.appendChild(el('span', 'who', t('ui.claude')));
-        box.appendChild(document.createTextNode(reply));
+        box.appendChild(markdown(el('div', 'md'), reply));
         body.appendChild(box);
       }
       body.appendChild(sessionActions(s));
@@ -329,12 +328,17 @@ function renderSessions() {
   }
 }
 
+function markdown(node, text) {
+  return PetMarkdown.render(node, text, { onLink: (url) => api.openLink(url) });
+}
+
 function renderChat() {
   const log = ui.chatLog;
   log.replaceChildren();
   for (const m of state.chat.messages) {
     const bubble = el('div', `msg ${m.role}${m.pending ? ' pending' : ''}${m.error ? ' error' : ''}`);
-    const text = el('span', 'text', m.text);
+    // Claude's replies are Markdown; what you wrote stays as typed
+    const text = m.role === 'assistant' && !m.error ? markdown(el('div', 'text md'), m.text) : el('span', 'text', m.text);
     text.dataset.placeholder = t('ui.waitingAnswer');
     bubble.appendChild(text);
     if (m.pending && m.tool) bubble.appendChild(el('span', 'tool', `${state.chat.target === 'cloud' ? '☁' : '🔧'} ${m.tool}`));
@@ -479,13 +483,11 @@ function setTarget(target) {
 }
 
 async function chooseWhere() {
-  choosingFolder = true;
   const current = state.chat.cwd || state.config.quickChatCwd;
-  const pick = await api.folderMenu(current).finally(() => (choosingFolder = false));
+  const pick = await api.folderMenu(current);
   let folder = pick && pick.dir;
   if (pick && pick.choose) {
-    choosingFolder = true;
-    folder = await api.chooseFolder(current).finally(() => (choosingFolder = false));
+    folder = await api.chooseFolder(current);
   }
   if (pick && pick.clone) {
     state.cloning = true;
@@ -743,10 +745,6 @@ function setupControls() {
     }
   });
   ui.composerInput.addEventListener('input', reportSize);
-  // an empty quick-chat box goes away when you switch to another window
-  window.addEventListener('blur', () => {
-    if (state.composerOpen && !choosingFolder && !state.chat.busy && !ui.composerInput.value.trim()) closeComposer();
-  });
   $('composer-close').addEventListener('click', closeComposer);
   ui.composerCwd.addEventListener('click', chooseWhere);
   ui.composerTarget.addEventListener('change', () => setTarget(ui.composerTarget.value));

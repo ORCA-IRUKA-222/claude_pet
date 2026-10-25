@@ -32,6 +32,8 @@ function modelArgs({ model, effort }) {
 }
 const CLOUD_ID = /^(cse|session)_[A-Za-z0-9]+$/;
 const CLOUD_NOTE = /Cloud session: (\S+) \((https:\/\/claude\.ai\/code\/[^\s)]+)\)/;
+// What `claude -p --cloud <session>` prints before the reply; the pet shows the reply only.
+const CLOUD_PREAMBLE = /^(Sent to cloud session\.?|Session ID: (session_[A-Za-z0-9]+)|View: (https:\/\/claude\.ai\/code\/\S+))$/;
 
 /** Arguments for a cloud task: a new session, or a follow-up to one (plain text only). */
 function buildCloudArgs({ resume, text, model, effort }) {
@@ -137,7 +139,12 @@ class QuickChat extends EventEmitter {
     const stdoutLine = (raw) => {
       const line = raw.trim();
       if (plain || (cloud && !line.startsWith('{'))) {
-        if (raw.trim() || sawOutput) this.emit('event', { type: 'raw', text: raw.replace(/\r$/, '') });
+        if (!sawOutput) {
+          const pre = CLOUD_PREAMBLE.exec(line);
+          if (pre && pre[2]) this.emit('event', { type: 'cloud', cloudSessionId: pre[2] });
+          if (pre || !line) return; // the header lines and the blank line after them
+        }
+        this.emit('event', { type: 'raw', text: raw.replace(/\r$/, '') });
         sawOutput = true;
         return;
       }

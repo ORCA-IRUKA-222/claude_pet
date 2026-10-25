@@ -139,6 +139,7 @@ process.stdin.on('end', () => {
   const attach = args[args.indexOf('--cloud') + 1];
   process.stderr.write('Creating cloud session…\\n');
   process.stderr.write('Cloud session: cse_01ABC (https://claude.ai/code/session_01ABC)\\n');
+  if (attach) process.stdout.write('Sent to cloud session.\\nSession ID: session_01ABC\\nView: https://claude.ai/code/session_01ABC?from=cli&m=0\\n\\n');
   process.stdout.write((attach ? 'follow-up to ' + attach : 'task') + ': ' + input + '\\n\\nsecond line\\n');
 });
 `,
@@ -179,7 +180,12 @@ test(
     pending = collect(chat);
     chat.send({ prompt: '続けて', cwd: tempDir(), cloud: true, resume: 'cse_01ABC' });
     events = await pending;
-    assert.equal(events.find((e) => e.type === 'raw').text, 'follow-up to cse_01ABC: 続けて');
+    assert.equal(
+      events.find((e) => e.type === 'raw').text,
+      'follow-up to cse_01ABC: 続けて',
+      'the CLI header lines are left out',
+    );
+    assert.ok(events.some((e) => e.type === 'cloud' && e.cloudSessionId === 'session_01ABC'));
   },
 );
 

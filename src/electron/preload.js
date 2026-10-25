@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('pet', {
   copy: (text) => ipcRenderer.send('copy', text),
   openTerminal: (sessionId, cwd, cloudId) => ipcRenderer.invoke('open-terminal', { sessionId, cwd, cloudId }),
   openUrl: (url, inApp = false) => ipcRenderer.send('open-url', url, Boolean(inApp)),
+  openLink: (url) => ipcRenderer.send('open-link', url),
   openDesktop: (sessionId, cwd) => ipcRenderer.invoke('open-desktop', { sessionId, cwd }),
   openChat: (sessionId) => ipcRenderer.invoke('open-chat', sessionId),
   quickSend: (prompt, cwd, resume, cloud) => ipcRenderer.invoke('quick-send', { prompt, cwd, resume, cloud }),
