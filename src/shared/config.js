@@ -33,6 +33,7 @@ const DEFAULTS = {
     cwd: null, // defaults to the home directory
     permissionMode: 'default',
     model: null,
+    openInApp: false, // also open each new quick chat in the Claude desktop app
   },
   rotation: {
     enabled: false,

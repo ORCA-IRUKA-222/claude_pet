@@ -26,7 +26,7 @@ const { listPets, findPet } = require('../core/pets');
 const { QuickChat } = require('../core/quickchat');
 const { recentSessions, findTranscript, readConversation } = require('../core/history');
 const rotation = require('../core/rotation');
-const { openInTerminal, openInDesktop } = require('../core/terminal');
+const { openInTerminal } = require('../core/terminal');
 const installer = require('../core/installer');
 const autostart = require('../core/autostart');
 const { findClaude, isClaudeExecutable } = require('../core/claude-path');
@@ -56,7 +56,10 @@ const quickChat = new QuickChat({
   permissionMode: config.quickChat.permissionMode,
   model: config.quickChat.model,
 });
-quickChat.on('event', (ev) => sendToRenderer('quick-event', ev));
+quickChat.on('event', (ev) => {
+  sendToRenderer('quick-event', ev);
+  quickChatToApp(ev);
+});
 
 function persist(changes) {
   Object.assign(config, changes);
@@ -343,6 +346,12 @@ function buildMenu() {
       },
     },
     {
+      label: t('menu.quickChatToApp'),
+      type: 'checkbox',
+      checked: Boolean(config.quickChat.openInApp),
+      click: (item) => persist({ quickChat: { ...config.quickChat, openInApp: item.checked } }),
+    },
+    {
       label: t('menu.autostart'),
       type: 'checkbox',
       checked: startsAtLogin,
@@ -376,6 +385,24 @@ function buildMenu() {
 function learnClaudePath(file) {
   if (!file || file === config.learnedClaudePath || !isClaudeExecutable(file)) return;
   persist({ learnedClaudePath: file });
+}
+
+// ---------------------------------------------------------------- Claude desktop app
+
+const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const openedInApp = new Set();
+
+/** The same link `claude --desktop --resume <id>` opens, without needing a console. */
+async function openInApp(sessionId) {
+  if (!SESSION_UUID.test(String(sessionId || ''))) throw new Error('invalid session id');
+  openedInApp.add(sessionId);
+  await shell.openExternal(`claude://resume?session=${sessionId}`);
+}
+
+/** With quickChat.openInApp on, a new quick chat also opens in the app once it has its first reply. */
+function quickChatToApp(ev) {
+  if (!config.quickChat.openInApp || ev.type !== 'done' || !ev.sessionId || openedInApp.has(ev.sessionId)) return;
+  openInApp(ev.sessionId).catch(() => {});
 }
 
 // ---------------------------------------------------------------- cloud sessions
@@ -586,9 +613,9 @@ function registerIpc() {
     if (typeof url === 'string' && /^https:\/\/claude\.ai\/[\w/.-]*$/.test(url)) shell.openExternal(url);
   });
 
-  ipcMain.handle('open-desktop', async (_e, { sessionId, cwd }) => {
+  ipcMain.handle('open-desktop', async (_e, { sessionId }) => {
     try {
-      await openInDesktop({ sessionId, cwd, claudePath: claudeCommand(), template: config.terminalCommand });
+      await openInApp(sessionId);
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err.message };

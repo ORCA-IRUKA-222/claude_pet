@@ -46,13 +46,12 @@ async function firstAvailable(candidates) {
  * @param {string} [opts.sessionId]  Claude Code session to resume; a new one starts without it
  * @param {string} [opts.claudePath] claude executable
  * @param {string} [opts.template]   custom command, e.g. "wezterm start --cwd {cwd} -- {command}"
- * @param {string[]} [opts.args]     claude arguments instead of `--resume <session>`
  */
-async function openInTerminal({ cwd, sessionId, claudePath, template, args }) {
+async function openInTerminal({ cwd, sessionId, claudePath, template }) {
   if (sessionId && !SESSION_ID.test(sessionId)) throw new Error('invalid session id');
   const dir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
   const claude = claudePath || 'claude';
-  const claudeArgs = args || (sessionId ? ['--resume', sessionId] : []);
+  const claudeArgs = sessionId ? ['--resume', sessionId] : [];
   const claudeCommand = [/\s/.test(claude) ? `"${claude}"` : claude, ...claudeArgs].join(' ');
 
   if (template) {
@@ -91,22 +90,4 @@ async function openInTerminal({ cwd, sessionId, claudePath, template, args }) {
   }
 }
 
-/**
- * Hand a session to the Claude desktop app (`claude --desktop --resume <id>`). The CLI only
- * does that from a real console, so on Windows it runs in a minimized console window that
- * closes once the app has the session; elsewhere it opens in a terminal.
- */
-async function openInDesktop({ cwd, sessionId, claudePath, template }) {
-  if (!SESSION_ID.test(sessionId || '')) throw new Error('invalid session id');
-  const dir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
-  const claude = claudePath || 'claude';
-  if (process.platform === 'win32') {
-    const command = `${/\s/.test(claude) ? `"${claude}"` : claude} --desktop --resume ${sessionId}`;
-    return detached('cmd.exe', ['/c', 'start', '""', '/min', '/D', `"${dir}"`, 'cmd.exe', '/c', command], {
-      windowsVerbatimArguments: true,
-    });
-  }
-  return openInTerminal({ cwd: dir, sessionId, claudePath, template, args: ['--desktop', '--resume', sessionId] });
-}
-
-module.exports = { openInTerminal, openInDesktop, shellQuote, appleScriptString };
+module.exports = { openInTerminal, shellQuote, appleScriptString };
