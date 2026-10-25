@@ -40,6 +40,14 @@ claude-pet              # ペットを起動
 
 `setup` は `~/.claude/settings.json` に Claude Pet のフックを**追記**します（既存の設定やフックはそのまま残り、元のファイルは `settings.json.claude-pet.bak` にバックアップされます）。設定は次に起動した Claude Code のセッションから有効になります。
 
+### PC 起動時に自動で起動する
+
+```bash
+claude-pet autostart on     # やめるときは off、今の設定は autostart だけで表示
+```
+
+右クリックメニューの「PC 起動時に起動」でも切り替えられます。サインインしたときに Electron を直接起動するので、ターミナルの画面は開きません（Windows はレジストリの `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`、macOS は `~/Library/LaunchAgents/dev.claude-pet.plist`、Linux は `~/.config/autostart/claude-pet.desktop` に登録します）。終了したあとは、Claude Code の中で `/pet` と打てばターミナルを増やさずに起動できます。
+
 ## 使い方
 
 | 操作 | 動作 |
@@ -217,7 +225,7 @@ Claude Code ──(hooks)──▶ src/hook/pet-hook.js ──HTTP──▶ ペ�
 ## アンインストール
 
 ```bash
-claude-pet uninstall    # フックと /pet, /hatch-pet を削除（ほかの設定は残ります）
+claude-pet uninstall    # フックと /pet, /hatch-pet、PC 起動時の自動起動を削除（ほかの設定は残ります）
 ```
 
 そのあと `claude_pet` フォルダと `~/.claude-pet` を削除してください。
@@ -242,6 +250,7 @@ npm run build:pet    # tools/designs/mochi.js から pets/mochi とアイコン�
 | `src/hook/pet-hook.js` | Claude Code から呼ばれるフック |
 | `src/core/sessions.js` | フックのイベントからセッションの状態を決める |
 | `src/core/history.js` | 起動前の会話を会話記録から読み込む |
+| `src/core/autostart.js` | PC 起動時の自動起動の登録 |
 | `src/core/server.js` | ローカルの受け口 |
 | `src/core/quickchat.js` | クイックチャット（`claude -p --output-format stream-json`） |
 | `src/core/installer.js` | `setup` / `uninstall` |

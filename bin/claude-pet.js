@@ -22,6 +22,7 @@ const HELP = `claude-pet — Claude Code のデスクトップペット
   claude-pet pets                使えるペットの一覧
   claude-pet use <id>            ペットを切り替え
   claude-pet next                次のペットに交代
+  claude-pet autostart on|off    PC 起動時に自動で起動（ターミナルは開きません）
   claude-pet rotate on|off [--every 60] [--group <名前> | --all]
                                  一定時間ごとにペットを自動で交代
   claude-pet add-image <画像> [--id id] [--name 名前] [--group グループ] [--height 高さ]
@@ -158,6 +159,8 @@ async function runPetCommand(args, { wait = true } = {}) {
     }
     case 'rotate':
       return rotateCommand(rest, running, t);
+    case 'autostart':
+      return autostartCommand(rest[0], running, t);
     default:
       return t('cli.usage');
   }
@@ -223,6 +226,22 @@ async function rotateCommand(tokens, running, t) {
   return state.enabled ? t('cli.rotationOn', vars) : t('cli.rotationOff');
 }
 
+async function autostartCommand(token, running, t) {
+  const want = token === 'on' ? true : token === 'off' ? false : undefined;
+  let on;
+  if (running) on = (await client.control('autostart', want)).autostart;
+  else {
+    const autostart = require('../src/core/autostart');
+    const opts = { electron: electronBinary(), appRoot: APP_ROOT };
+    if (want === true) autostart.enable(opts);
+    if (want === false) autostart.disable(opts);
+    on = autostart.isEnabled(opts);
+  }
+  if (want === undefined) return t('cli.autostartStatus', { state: on ? t('cli.on') : t('cli.off') });
+  if (on !== want) return t('cli.autostartFailed');
+  return on ? t('cli.autostartOn') : t('cli.autostartOff');
+}
+
 function readStdin() {
   return new Promise((resolve) => {
     if (process.stdin.isTTY) return resolve('');
@@ -286,6 +305,7 @@ async function main(argv) {
     case 'use':
     case 'next':
     case 'rotate':
+    case 'autostart':
       console.log(await runPetCommand([command, ...args]));
       break;
     case 'pet':
@@ -310,6 +330,7 @@ async function main(argv) {
       console.log(`フックを登録しました: ${result.settings}`);
       for (const dir of result.skills) console.log(`スキルを追加しました: ${dir}`);
       console.log('起動中の Claude Code には、次のセッションから反映されます。');
+      console.log('PC 起動時にペットも起動するには: claude-pet autostart on');
       break;
     }
     case 'uninstall': {
@@ -317,6 +338,11 @@ async function main(argv) {
       const result = installer.uninstall();
       if (result.settings) console.log(`フックを削除しました: ${result.settings}`);
       for (const dir of result.skills) console.log(`スキルを削除しました: ${dir}`);
+      const autostart = require('../src/core/autostart');
+      if (autostart.isEnabled()) {
+        autostart.disable();
+        console.log('PC 起動時の自動起動をやめました');
+      }
       break;
     }
     case 'add-image': {

@@ -71,6 +71,7 @@
       'menu.bubble': '吹き出しを表示',
       'menu.notifications': 'デスクトップ通知',
       'menu.alwaysOnTop': '常に手前に表示',
+      'menu.autostart': 'PC 起動時に起動',
       'menu.openPetsFolder': 'ペットのフォルダを開く',
       'menu.reloadPets': 'ペットを再読み込み',
       'menu.language': '言語 / Language',
@@ -89,6 +90,10 @@
       'cli.rotationOn': '🐾 {interval}ごとにペットが交代します（対象 {count}）',
       'cli.rotationOff': '🐾 ペットの自動交代をやめました',
       'cli.rotationStatus': '🐾 自動交代: {state}（{interval}ごと、対象 {count}）',
+      'cli.autostartOn': '🐾 PC を起動したときにペットも起動します（ターミナルは開きません）',
+      'cli.autostartOff': '🐾 PC 起動時の自動起動をやめました',
+      'cli.autostartStatus': '🐾 PC 起動時の自動起動: {state}',
+      'cli.autostartFailed': '🐾 PC 起動時の自動起動を切り替えられませんでした',
       'cli.on': 'オン',
       'cli.off': 'オフ',
       'cli.next': '🐾 {name} に交代しました',
@@ -107,7 +112,8 @@
       'cli.petChanged': '🐾 ペットを {name} にしました',
       'cli.petNotFound': '🐾 ペット「{id}」が見つかりません。/pet list で一覧を表示できます',
       'cli.petList': '🐾 使えるペット: {list}',
-      'cli.usage': '使い方: /pet [show | hide | mini | full | list | use <id> | next | rotate on|off|<分> | quit]',
+      'cli.usage':
+        '使い方: /pet [show | hide | mini | full | list | use <id> | next | rotate on|off|<分> | autostart on|off | quit]',
     },
     en: {
       'status.idle': 'Idle',
@@ -174,6 +180,7 @@
       'menu.bubble': 'Show speech bubble',
       'menu.notifications': 'Desktop notifications',
       'menu.alwaysOnTop': 'Always on top',
+      'menu.autostart': 'Start at sign-in',
       'menu.openPetsFolder': 'Open pets folder',
       'menu.reloadPets': 'Reload pets',
       'menu.language': '言語 / Language',
@@ -192,6 +199,10 @@
       'cli.rotationOn': '🐾 Pets now rotate every {interval} ({count} pets)',
       'cli.rotationOff': '🐾 Pet rotation is off',
       'cli.rotationStatus': '🐾 Rotation: {state} (every {interval}, {count} pets)',
+      'cli.autostartOn': '🐾 The pet now starts when you sign in (no terminal window)',
+      'cli.autostartOff': '🐾 The pet no longer starts at sign-in',
+      'cli.autostartStatus': '🐾 Start at sign-in: {state}',
+      'cli.autostartFailed': '🐾 Could not change the start-at-sign-in setting',
       'cli.on': 'on',
       'cli.off': 'off',
       'cli.next': '🐾 Switched to {name}',
@@ -210,7 +221,8 @@
       'cli.petChanged': '🐾 Your pet is now {name}',
       'cli.petNotFound': '🐾 No pet named "{id}". Try /pet list',
       'cli.petList': '🐾 Pets: {list}',
-      'cli.usage': 'Usage: /pet [show | hide | mini | full | list | use <id> | next | rotate on|off|<minutes> | quit]',
+      'cli.usage':
+        'Usage: /pet [show | hide | mini | full | list | use <id> | next | rotate on|off|<minutes> | autostart on|off | quit]',
     },
   };
 

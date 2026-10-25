@@ -28,6 +28,7 @@ const { recentSessions } = require('../core/history');
 const rotation = require('../core/rotation');
 const { openInTerminal } = require('../core/terminal');
 const installer = require('../core/installer');
+const autostart = require('../core/autostart');
 const { version } = require('../../package.json');
 
 const SCALES = { small: 0.5, medium: 0.75, large: 1 };
@@ -38,6 +39,7 @@ let t = translator(config.language);
 let win = null;
 let tray = null;
 let pet = null;
+let startsAtLogin = false;
 let anchor = null; // bottom-centre of the pet, in screen coordinates
 let drag = null;
 let saveTimer = null;
@@ -336,6 +338,12 @@ function buildMenu() {
       },
     },
     {
+      label: t('menu.autostart'),
+      type: 'checkbox',
+      checked: startsAtLogin,
+      click: (item) => setAutostart(item.checked),
+    },
+    {
       label: t('menu.language'),
       submenu: [
         ['ja', '日本語'],
@@ -358,6 +366,31 @@ function buildMenu() {
       : { label: t('menu.show'), accelerator: config.shortcuts.toggle || undefined, click: () => setVisible(true) },
     { label: t('menu.quit'), click: () => quit() },
   ]);
+}
+
+// ---------------------------------------------------------------- start at sign-in
+
+const autostartOptions = () => ({ electron: process.execPath, appRoot: APP_ROOT });
+
+function readAutostart() {
+  try {
+    startsAtLogin = autostart.isEnabled(autostartOptions());
+  } catch {
+    startsAtLogin = false;
+  }
+  return { autostart: startsAtLogin };
+}
+
+function setAutostart(on) {
+  try {
+    if (on) autostart.enable(autostartOptions());
+    else autostart.disable(autostartOptions());
+  } catch (err) {
+    console.error('[claude-pet] autostart:', err.message);
+  }
+  const result = readAutostart();
+  updateTray();
+  return result;
 }
 
 function trayIcon() {
@@ -460,6 +493,8 @@ async function handleControl({ action, value }) {
     }
     case 'rotation':
       return value && typeof value === 'object' ? updateRotation(value) : rotationStatus();
+    case 'autostart':
+      return typeof value === 'boolean' ? setAutostart(value) : readAutostart();
     case 'quit':
       setTimeout(quit, 50);
       return {};
@@ -577,6 +612,7 @@ async function boot() {
   else checkRotation();
   // Checked often so the switch happens on time even after the computer wakes from sleep.
   setInterval(checkRotation, 30e3).unref();
+  readAutostart();
   tracker.on('change', pushState);
   // Past Claude Code conversations, so the list isn't empty before the first hook event.
   const loadHistory = () => {
