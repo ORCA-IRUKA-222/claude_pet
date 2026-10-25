@@ -48,6 +48,7 @@ const state = {
 };
 
 let t = PetI18n.translator('ja');
+const AUTH_ERROR = /authenticat|oauth|\/login|api key/i;
 let choosingFolder = false; // the folder dialog takes focus; keep the quick-chat box open
 
 // ------------------------------------------------------------------ helpers
@@ -435,6 +436,8 @@ function handleQuickEvent(ev) {
       if (reply) {
         if (!reply.text && ev.text) reply.text = ev.text;
         reply.error = ev.isError;
+        // an expired login can only be renewed interactively
+        if (ev.isError && AUTH_ERROR.test(reply.text)) reply.text += `\n\n${t('ui.loginHint')}`;
       }
       break;
     case 'error':

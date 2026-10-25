@@ -61,6 +61,7 @@
       'ui.claude': 'Claude',
       'ui.quickError': 'Claude を起動できませんでした: {error}',
       'ui.terminalFailed': 'ターミナルを開けませんでした',
+      'ui.loginHint': 'ログインが切れています。「ターミナルで続ける」で Claude Code を開き、/login でログインし直してください',
       'error.claudeNotFound':
         'Claude Code（claude コマンド）が見つかりません。このPCに Claude Code をインストールして一度使うと、ペットが場所を覚えます',
       'menu.sessions': 'セッション一覧',
@@ -176,6 +177,7 @@
       'ui.claude': 'Claude',
       'ui.quickError': 'Could not start Claude: {error}',
       'ui.terminalFailed': 'Could not open a terminal',
+      'ui.loginHint': 'Your login has expired. Open Claude Code with "Continue in terminal" and run /login',
       'error.claudeNotFound':
         'Claude Code (the claude command) was not found. Install Claude Code on this computer and use it once; the pet then remembers where it is',
       'menu.sessions': 'Sessions',
