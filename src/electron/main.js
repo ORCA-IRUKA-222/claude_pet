@@ -685,9 +685,12 @@ function registerIpc() {
   ipcMain.on('dismiss', (_e, id) => tracker.dismiss(String(id)));
   ipcMain.on('copy', (_e, text) => clipboard.writeText(String(text || '')));
 
-  ipcMain.on('open-url', (_e, url) => {
+  ipcMain.on('open-url', (_e, url, inApp) => {
     // only conversations on claude.ai: cloud sessions and browser chats
-    if (typeof url === 'string' && /^https:\/\/claude\.ai\/[\w/.?=&-]*$/.test(url)) shell.openExternal(url);
+    if (typeof url !== 'string' || !/^https:\/\/claude\.ai\/[\w/.?=&-]*$/.test(url)) return;
+    if (!inApp) return void shell.openExternal(url);
+    // the desktop app opens claude.ai pages from claude://claude.ai/<path>, as Claude Code does
+    shell.openExternal(url.replace(/^https:\/\//, 'claude://')).catch(() => shell.openExternal(url));
   });
 
   ipcMain.handle('open-desktop', async (_e, { sessionId }) => {

@@ -23,7 +23,7 @@ contextBridge.exposeInMainWorld('pet', {
   dismiss: (id) => ipcRenderer.send('dismiss', id),
   copy: (text) => ipcRenderer.send('copy', text),
   openTerminal: (sessionId, cwd, cloudId) => ipcRenderer.invoke('open-terminal', { sessionId, cwd, cloudId }),
-  openUrl: (url) => ipcRenderer.send('open-url', url),
+  openUrl: (url, inApp = false) => ipcRenderer.send('open-url', url, Boolean(inApp)),
   openDesktop: (sessionId, cwd) => ipcRenderer.invoke('open-desktop', { sessionId, cwd }),
   openChat: (sessionId) => ipcRenderer.invoke('open-chat', sessionId),
   quickSend: (prompt, cwd, resume, cloud) => ipcRenderer.invoke('quick-send', { prompt, cwd, resume, cloud }),

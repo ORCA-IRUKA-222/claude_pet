@@ -232,8 +232,9 @@ function sessionActions(s) {
   };
   if (s.unread || s.effectiveStatus === 'failed') add(t('ui.markRead'), () => api.markRead(s.id));
   // cloud sessions and browser chats live on claude.ai, not on this computer
+  if (s.url && s.source === 'cloud') add(t('ui.openInApp'), () => api.openUrl(s.url, true));
   if (s.url) add(t('ui.openInBrowser'), () => api.openUrl(s.url));
-  else {
+  else if (s.source !== 'cloud' && s.source !== 'browser') {
     add(t('ui.continueHere'), () => continueInChat(s.id));
     add(t('ui.openInApp'), () => openInApp(s.id, s.cwd));
     add(t('ui.openTerminal'), async (b) => {
@@ -285,10 +286,12 @@ function renderSessions() {
       if (!expanded && s.effectiveStatus === 'ready') api.markRead(s.id);
       renderPanel();
     };
-    // a conversation on this computer opens in full; cloud and browser ones only have a summary here
+    // a conversation on this computer opens in full here; a cloud session opens in the Claude
+    // app and a browser chat in the browser; a cloud row without a link only has its summary
     row.addEventListener('click', () => {
-      if (s.url) return toggle();
       if (s.effectiveStatus === 'ready') api.markRead(s.id);
+      if (s.url) return api.openUrl(s.url, s.source === 'cloud');
+      if (s.source === 'cloud' || s.source === 'browser') return toggle();
       continueInChat(s.id);
     });
     item.appendChild(row);
@@ -715,7 +718,7 @@ function setupControls() {
   });
   $('chat-app').addEventListener('click', () => {
     if (state.chat.url)
-      api.openUrl(state.chat.url); // a cloud task opens on claude.ai/code
+      api.openUrl(state.chat.url, true); // a cloud task opens in the Claude app (claude.ai/code)
     else openInApp(state.chat.sessionId, state.chat.cwd);
   });
   $('chat-terminal').addEventListener('click', async () => {
