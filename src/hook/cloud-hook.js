@@ -7,6 +7,7 @@
 //
 //   node cloud-hook.js --install   register it (the cloud environment's setup script does this)
 
+const { spawnSync } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const http = require('http');
@@ -92,7 +93,22 @@ function shouldSend(raw, event, now = Date.now()) {
   return true;
 }
 
-function publish({ server, topic }, body) {
+/**
+ * Cloud containers reach the internet through a proxy (HTTPS_PROXY) that Node's own https
+ * doesn't use, so the message goes out with curl, which does; Node is the fallback.
+ */
+function publish(target, body) {
+  const url = `${target.server.replace(/\/+$/, '')}/${target.topic}`;
+  const curl = spawnSync('curl', ['-fsS', '-m', '5', '-H', 'Content-Type: text/plain', '--data-binary', '@-', url], {
+    input: body,
+    stdio: ['pipe', 'ignore', 'ignore'],
+    timeout: 7000,
+  });
+  if (!curl.error && curl.status === 0) return Promise.resolve(true);
+  return publishWithNode(target, body);
+}
+
+function publishWithNode({ server, topic }, body) {
   return new Promise((resolve) => {
     const url = new URL(`${server.replace(/\/+$/, '')}/${topic}`);
     const req = (url.protocol === 'http:' ? http : https).request(
@@ -100,11 +116,11 @@ function publish({ server, topic }, body) {
       { method: 'POST', headers: { 'content-type': 'text/plain' }, timeout: 3000 },
       (res) => {
         res.resume();
-        res.on('end', resolve);
+        res.on('end', () => resolve(res.statusCode === 200));
       },
     );
     req.on('timeout', () => req.destroy());
-    req.on('error', resolve);
+    req.on('error', () => resolve(false));
     req.end(body);
   });
 }
