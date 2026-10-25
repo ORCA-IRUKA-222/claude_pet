@@ -1,6 +1,6 @@
 'use strict';
 
-/* global PetI18n, PetSprite, PetMarkdown, PetTime, PetTools */
+/* global PetI18n, PetSprite, PetMarkdown, PetTime, PetTools, PetLines */
 
 const api = window.pet;
 const $ = (id) => document.getElementById(id);
@@ -75,6 +75,8 @@ const state = {
   screenshots: new Set(), // which of them are screenshots, so the default question fits
   temporary: null, // a one-off animation (wave, jump) that overrides the status animation
   toast: null, // { title, sub, sticky } shown in the bubble, e.g. when the pet changes; sticky ones (alarms) stay until clicked
+  lines: {}, // what this pet says in each scene (~/.claude-pet/lines)
+  sceneLine: null, // { id, status, text }: the pet's line for a session that just finished / waits / failed
 };
 
 let t = PetI18n.translator('ja');
@@ -274,6 +276,11 @@ function say(text, { duration = 6000, sticky = false } = {}) {
   if (text) showToast(text, '', duration, { sticky });
 }
 
+/** This pet's own line for a scene, if it has one (see src/shared/lines.js). */
+function speak(scene, vars = {}, options = {}) {
+  return PetLines.pick(state.lines, scene, vars, options);
+}
+
 function digestSummary(counts) {
   return ['ready', 'waiting', 'failed']
     .filter((k) => counts && counts[k] > 0)
@@ -339,16 +346,19 @@ function renderBubble() {
   const show = visible && s && agg.status !== 'idle' && (!held(agg.status) || Boolean(perm));
   ui.bubble.hidden = !show;
   if (!show) return;
-  ui.bubble.className = `bubble status-${agg.status}`;
+  const scene = state.sceneLine;
+  const line = scene && scene.id === s.id && scene.status === s.effectiveStatus ? scene.text : null;
+  ui.bubble.className = `bubble status-${agg.status}${line ? ' speaking' : ''}`;
   const others = attentionCount() + (agg.counts.running || 0) - 1;
-  ui.bubbleTitle.textContent = `${sessionName(s)} · ${activityText(s)}`;
+  // with a line, the pet says it and the session moves to the second line
+  ui.bubbleTitle.textContent = line || `${sessionName(s)} · ${activityText(s)}`;
   ui.bubbleClock.hidden = !isWorking(s);
   if (isWorking(s)) {
     ui.bubbleClock.dataset.since = String(s.turnStartedAt);
     ui.bubbleClock.textContent = PetTime.formatClock(Date.now() - s.turnStartedAt);
   } else delete ui.bubbleClock.dataset.since;
   ui.bubblePause.hidden = !(s.effectiveStatus === 'running' && !s.pauseRequested && s.source === 'cli');
-  const detail = detailText(s);
+  const detail = line ? `${sessionName(s)} — ${detailText(s) || activityText(s)}` : detailText(s);
   ui.bubbleSub.replaceChildren(document.createTextNode(detail));
   if (others > 0) ui.bubbleSub.appendChild(el('span', 'bubble-more', t('bubble.more', { n: others })));
   ui.bubbleSub.hidden = !ui.bubbleSub.textContent;
@@ -1042,11 +1052,11 @@ function checkTimeOfDay() {
   if (hour >= 5 && hour < 11 && greet.morningDay !== day) {
     greet.morningDay = day;
     storage('pet.morningDay', day);
-    say(t('say.morning'), { duration: 7000 });
+    say((speak('morning') || { text: t('say.morning') }).text, { duration: 7000 });
     playOnce('waving', 2);
   } else if (night && Date.now() - greet.nightAt > 60 * 60e3) {
     greet.nightAt = Date.now();
-    say(t('say.night'), { duration: 9000 });
+    say((speak('night') || { text: t('say.night') }).text, { duration: 9000 });
   }
 }
 
@@ -1084,8 +1094,14 @@ function handleDigest(d) {
   const summary = digestSummary(d.counts);
   if (d.reason === 'away') {
     if (!summary && !state.config.greetings) return;
-    const text = summary ? t('say.awaySummary', { summary }) : d.cause === 'sleep' ? t('say.resume') : t('say.welcomeBack');
-    say(text, { duration: summary ? 14000 : 6000 });
+    const line = speak('welcome', { summary }, { want: ['summary'] });
+    if (line && (!summary || line.uses.includes('summary'))) say(line.text, { duration: summary ? 14000 : 6000 });
+    else if (line)
+      showToast(line.text, summary, 14000); // the summary still gets told
+    else {
+      const text = summary ? t('say.awaySummary', { summary }) : d.cause === 'sleep' ? t('say.resume') : t('say.welcomeBack');
+      say(text, { duration: summary ? 14000 : 6000 });
+    }
     playOnce('waving', 2);
     setTimeout(checkTimeOfDay, 7000); // good morning comes after "welcome back"
   } else if (summary) {
@@ -1095,12 +1111,15 @@ function handleDigest(d) {
 
 function handleAlarm(a) {
   if (a.kind === 'timer') {
-    say(a.label ? t('timer.doneLabel', { label: a.label }) : t('timer.done'), { sticky: true });
+    const line = speak('timer');
+    if (line) showToast(line.text, a.label ? `⏰ ${a.label}` : '', 0, { sticky: true });
+    else say(a.label ? t('timer.doneLabel', { label: a.label }) : t('timer.done'), { sticky: true });
     playOnce('jumping', 4);
     beep(3);
   } else if (a.kind === 'pomodoro') {
-    if (a.to === 'focus') say(t('pomo.focusStart', { min: a.minutes }), { duration: 7000 });
-    else if (a.to) say(t('pomo.breakStart', { min: a.minutes }), { duration: 10000 });
+    const vars = { min: a.minutes };
+    if (a.to === 'focus') say((speak('focus', vars) || { text: t('pomo.focusStart', vars) }).text, { duration: 7000 });
+    else if (a.to) say((speak('break', vars) || { text: t('pomo.breakStart', vars) }).text, { duration: 10000 });
     else say(t('pomo.finished'), { duration: 4000 });
     if (a.from) {
       playOnce(a.to === 'focus' ? 'waving' : 'jumping', 2);
@@ -1208,6 +1227,8 @@ function setupPointer(target) {
     if (state.toast && state.toast.sticky) return void dismissToast();
     if (!state.config.mini) playOnce('waving', 2);
     togglePanel();
+    const line = !state.config.mini && speak('click');
+    if (line) say(line.text, { duration: 3500 });
   };
   target.addEventListener('pointerup', end);
   target.addEventListener('pointercancel', end);
@@ -1392,6 +1413,7 @@ async function boot() {
   PetTools.setCalendar(init.calendar);
   applyConfig(init.config);
   state.pet = init.pet;
+  state.lines = (init.pet && init.pet.lines) || {};
   sprite.setPet(init.pet, init.config.scale);
   if (init.pet) ui.stage.title = init.pet.displayName;
   applyState(init.state);
@@ -1401,14 +1423,27 @@ async function boot() {
   api.on('config', applyConfig);
   api.on('pet', (pet) => {
     state.pet = pet;
+    state.lines = pet.lines || {};
+    state.sceneLine = null; // the next pet speaks for itself
     sprite.setPet(pet, state.config.scale);
     ui.stage.title = pet.displayName;
     playOnce('waving', 2);
-    if (pet.announce) showToast(pet.displayName, t('toast.arrived'));
+    if (pet.announce) {
+      const line = speak('arrive');
+      if (line) showToast(line.text, pet.displayName);
+      else showToast(pet.displayName, t('toast.arrived'));
+    }
     render();
   });
+  api.on('lines', (lines) => {
+    state.lines = lines || {};
+  });
   api.on('transition', ({ to, session, held: quiet }) => {
-    if (to === 'ready' && session.source !== 'quickchat' && !quiet) playOnce('jumping', 2);
+    if (session.source === 'quickchat' || quiet) return;
+    if (to === 'ready') playOnce('jumping', 2);
+    // picked once per change, so the bubble doesn't switch lines on every update
+    const line = ['ready', 'waiting', 'failed'].includes(to) && speak(to, { project: sessionName(session) });
+    if (line) state.sceneLine = { id: session.id, status: to, text: line.text };
   });
   api.on('command', (cmd) => {
     if (cmd.type === 'panel') openPanel(cmd.tab);

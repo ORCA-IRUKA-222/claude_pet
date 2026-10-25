@@ -32,7 +32,7 @@ git clone https://github.com/ORCA-IRUKA-222/claude_pet.git
 cd claude_pet
 npm install
 npm link                # claude-pet コマンドを使えるようにする（任意）
-claude-pet setup        # Claude Code にフックと /pet, /hatch-pet を登録
+claude-pet setup        # Claude Code にフックと /pet, /hatch-pet, /pet-lines を登録
 claude-pet              # ペットを起動
 ```
 
@@ -296,6 +296,43 @@ Claude Code からは `/pet rotate on`, `/pet rotate 30`（30 分ごと）, `/pe
 - メニューや `/pet use` で選んだペットは、そこから 1 回分の間隔だけ表示が続きます。
 - スリープから復帰したときも、時間が過ぎていればすぐ交代します。
 
+## ペットのセリフ
+
+ペットごとに、場面に合わせたセリフを登録できます。登録した中から毎回ランダムに 1 つ選んでしゃべり、同じセリフが続けて出ることはありません。セリフのない場面やペットは、いつもの文のままです。
+
+| 場面 | いつ | 差し込み |
+| --- | --- | --- |
+| `ready` | Claude の作業が終わったとき（吹き出しの 1 行目がセリフになります） | `{project}`（セッション名） |
+| `waiting` | 許可や質問の答えを待っているとき | `{project}` |
+| `failed` | エラーで止まったとき | `{project}` |
+| `morning` / `night` | 朝に初めて会ったとき / 夜 23 時を過ぎたとき | なし |
+| `welcome` | 離席から戻ったとき | `{summary}`（完了 2 件・入力待ち 1 件 など） |
+| `timer` | タイマーが終わったとき | なし |
+| `focus` / `break` | ポモドーロの集中 / 休憩が始まるとき | `{min}`（分） |
+| `click` | ペットをクリックしたとき | なし |
+| `arrive` | 交代でそのペットが出てきたとき | なし |
+
+セリフは `~/.claude-pet/lines/` に置く JSON ファイルです。1 つのファイルに何人分でも書けて、ペットの id か表示名（`saki.png` から作ったペットなら `saki`）で結び付きます。
+
+```json
+{
+  "pets": {
+    "saki": {
+      "ready": ["{project}、完了よ！", "終わったわ。思ったより早かったじゃない"],
+      "click": ["なに、プロデューサー？"]
+    }
+  }
+}
+```
+
+```bash
+claude-pet lines                      # セリフのあるペットの一覧
+claude-pet lines import <ファイル>    # セリフのファイルを登録して、すぐに反映
+claude-pet lines reload               # ファイルを直接直したあとに読み直す
+```
+
+Claude に書いてもらうこともできます。Claude Code で `/pet-lines saki 強気で負けず嫌い。一人称は「わたし」` のように頼むと、口調を確かめながら場面ごとのセリフを作って登録します。
+
 ## ペットを増やす
 
 ### Claude に作ってもらう（`/hatch-pet`）
@@ -413,7 +450,7 @@ Claude Code ──(hooks)──▶ src/hook/pet-hook.js ──HTTP──▶ ペ�
 ## アンインストール
 
 ```bash
-claude-pet uninstall    # フックと /pet, /hatch-pet、PC 起動時の自動起動を削除（ほかの設定は残ります）
+claude-pet uninstall    # フックと /pet, /hatch-pet, /pet-lines、PC 起動時の自動起動を削除（ほかの設定は残ります）
 ```
 
 そのあと `claude_pet` フォルダと `~/.claude-pet` を削除してください。
@@ -458,4 +495,5 @@ npm run build:pet    # tools/designs/mochi.js から pets/mochi とアイコン�
 | `src/core/installer.js` | `setup` / `uninstall` |
 | `src/electron/` , `src/renderer/` | デスクトップアプリ |
 | `tools/` | ピクセルアートの描画とスプライトシートの書き出し |
-| `skills/` | `/pet` と `/hatch-pet` のひな形 |
+| `skills/` | `/pet`・`/hatch-pet`・`/pet-lines` のひな形 |
+| `src/core/lines.js`, `src/shared/lines.js` | ペットのセリフ（読み込みと、場面ごとに選ぶ処理） |

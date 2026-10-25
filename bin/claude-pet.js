@@ -30,7 +30,7 @@ const HELP = `claude-pet — Claude Code のデスクトップペット
   claude-pet memo <内容>          メモを追加（今のフォルダのプロジェクト名が付きます）
   claude-pet dnd [時間 | off]     おやすみモード（時間なしは解除するまで）
   claude-pet shot                スクリーンショットを撮ってクイックチャットで質問
-  claude-pet setup               Claude Code にフックと /pet, /hatch-pet を登録
+  claude-pet setup               Claude Code にフックと /pet, /hatch-pet, /pet-lines を登録
   claude-pet uninstall           登録を解除
   claude-pet pets                使えるペットの一覧
   claude-pet use <id>            ペットを切り替え
@@ -43,6 +43,10 @@ const HELP = `claude-pet — Claude Code のデスクトップペット
                                  透過 PNG / WebP / GIF のイラストからペットを作成
                                  （--height は「大」サイズのときの高さ px。状態ごとに別の絵も指定可:
                                    idle, running, waiting, ready, failed）
+  claude-pet lines               セリフがあるペットの一覧（~/.claude-pet/lines）
+  claude-pet lines import <ファイル>
+                                 セリフのファイル（JSON）を登録して、すぐに反映
+  claude-pet lines reload        セリフを読み直す（ファイルを直接直したとき）
   claude-pet add-folder <フォルダ> [--group グループ] [--height 高さ]
                                  フォルダの画像をまとめてペットにする（1 枚 = 1 人、グループ名はフォルダ名）
   claude-pet build <design.js> [--out <dir>] [--install]
@@ -677,6 +681,28 @@ async function main(argv) {
         autostart.disable();
         console.log('PC 起動時の自動起動をやめました');
       }
+      break;
+    }
+    case 'lines': {
+      const lines = require('../src/core/lines');
+      const [sub, file] = args;
+      if (sub === 'import') {
+        if (!file || !fs.existsSync(file)) throw new Error('セリフのファイル（JSON）を指定してください');
+        const result = lines.importPack(file);
+        console.log(`セリフを登録しました: ${result.target}`);
+        console.log(`  ${result.pets.join(', ')}`);
+      }
+      if (sub === 'import' || sub === 'reload') {
+        if (await client.isRunning()) {
+          const res = await client.control('reload-lines');
+          console.log(res.scenes.length ? `${res.pet} のセリフを読み直しました` : `${res.pet} にはまだセリフがありません`);
+        }
+        break;
+      }
+      const list = lines.summary();
+      if (!list.length)
+        console.log(`セリフはまだありません（${lines.linesDir()} に JSON を置くか、claude-pet lines import を使います）`);
+      for (const p of list) console.log(`${p.name.padEnd(16)} ${String(p.count).padStart(3)} 個  ${p.scenes.join(', ')}`);
       break;
     }
     case 'add-folder': {

@@ -10,7 +10,7 @@ const { APP_ROOT, PERMISSION_TIMEOUT_MAX, claudeDir } = require('../shared/confi
 
 const HOOK_SCRIPT = path.join(APP_ROOT, 'src', 'hook', 'pet-hook.js');
 const CLI_SCRIPT = path.join(APP_ROOT, 'bin', 'claude-pet.js');
-const SKILLS = ['pet', 'hatch-pet'];
+const SKILLS = ['pet', 'hatch-pet', 'pet-lines'];
 
 // Events that fire on every tool call run in the background (async) so they
 // never slow Claude down. The rest are rare and run synchronously, which keeps

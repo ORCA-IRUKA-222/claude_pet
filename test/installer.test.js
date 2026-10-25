@@ -60,6 +60,9 @@ test('skills are written with absolute paths', () => {
   const pet = fs.readFileSync(path.join(claudeDir, 'skills', 'pet', 'SKILL.md'), 'utf8');
   assert.match(pet, /"\/opt\/node\/bin\/node" ".*claude-pet\.js" pet \$ARGUMENTS/);
   assert.doesNotMatch(pet, /\{\{/);
+  const lines = fs.readFileSync(path.join(claudeDir, 'skills', 'pet-lines', 'SKILL.md'), 'utf8');
+  assert.match(lines, /"\/opt\/node\/bin\/node" ".*claude-pet\.js" lines import/);
+  assert.doesNotMatch(lines, /\{\{/);
   const hatch = fs.readFileSync(path.join(claudeDir, 'skills', 'hatch-pet', 'SKILL.md'), 'utf8');
   assert.match(hatch, /build-pet\.js/);
   assert.doesNotMatch(hatch, /\{\{/);
@@ -76,6 +79,7 @@ test('uninstall removes only our hooks and skills', () => {
   assert.equal(settings.model, 'opus');
   assert.ok(!fs.existsSync(path.join(claudeDir, 'skills', 'pet')));
   assert.ok(!fs.existsSync(path.join(claudeDir, 'skills', 'hatch-pet')));
+  assert.ok(!fs.existsSync(path.join(claudeDir, 'skills', 'pet-lines')));
   assert.ok(fs.existsSync(userSkill));
   assert.ok(!installer.isInstalled());
 });
