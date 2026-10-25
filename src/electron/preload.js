@@ -1,6 +1,6 @@
 'use strict';
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const EVENTS = new Set(['state', 'transition', 'config', 'pet', 'command', 'quick-event']);
 
@@ -27,7 +27,10 @@ contextBridge.exposeInMainWorld('pet', {
   openLink: (url) => ipcRenderer.send('open-link', url),
   openDesktop: (sessionId, cwd) => ipcRenderer.invoke('open-desktop', { sessionId, cwd }),
   openChat: (sessionId) => ipcRenderer.invoke('open-chat', sessionId),
-  quickSend: (prompt, cwd, resume, cloud) => ipcRenderer.invoke('quick-send', { prompt, cwd, resume, cloud }),
+  quickSend: (prompt, cwd, resume, cloud, files) => ipcRenderer.invoke('quick-send', { prompt, cwd, resume, cloud, files }),
+  chooseFiles: () => ipcRenderer.invoke('choose-files'),
+  savePasted: (data, type) => ipcRenderer.invoke('save-pasted', data, type),
+  pathForFile: (file) => webUtils.getPathForFile(file), // a file dropped on the input
   askInApp: (prompt) => ipcRenderer.invoke('ask-in-app', prompt),
   folderMenu: (current) => ipcRenderer.invoke('folder-menu', current),
   cloneRepo: (text) => ipcRenderer.invoke('clone-repo', text),

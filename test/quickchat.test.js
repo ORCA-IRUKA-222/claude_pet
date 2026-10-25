@@ -264,3 +264,42 @@ process.stdin.on('end', () => {
   assert.ok(!events.some((e) => e.type === 'error'));
   assert.equal(chat.noEffort, true);
 });
+
+test(
+  'attached files go with the message, and their folders are opened to Claude Code',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const file = path.join(tempDir(), 'claude');
+    fs.writeFileSync(
+      file,
+      `#!/usr/bin/env node
+let input = '';
+process.stdin.on('data', (d) => (input += d));
+process.stdin.on('end', () => {
+  const text = JSON.stringify({ args: process.argv.slice(2), input });
+  process.stdout.write(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'result', result: 'ok', is_error: false }) + '\\n');
+});
+`,
+    );
+    fs.chmodSync(file, 0o755);
+    const docs = tempDir();
+    const pdf = path.join(docs, '見積もり.pdf');
+    fs.writeFileSync(pdf, '%PDF');
+    const chat = new QuickChat({ claudePath: file });
+    const events = await new Promise((resolve) => {
+      const all = [];
+      chat.on('event', (ev) => {
+        all.push(ev);
+        if (ev.type === 'done') resolve(all);
+      });
+      chat.send({ prompt: 'これを要約して', cwd: tempDir(), files: [pdf, path.join(docs, 'missing.txt'), 'relative.txt'] });
+    });
+    const { args, input } = JSON.parse(events.find((e) => e.type === 'text').text);
+    assert.deepEqual(args.slice(args.indexOf('--add-dir'), args.indexOf('--add-dir') + 2), ['--add-dir', docs]);
+    assert.equal(args.filter((a) => a === '--add-dir').length, 1, 'only files that exist');
+    assert.match(input, /^これを要約して\n\n添付ファイル/);
+    assert.ok(input.includes(`- ${pdf}`));
+    assert.ok(!input.includes('missing.txt'));
+  },
+);

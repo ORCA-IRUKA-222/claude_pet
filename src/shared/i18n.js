@@ -64,6 +64,10 @@
       'ui.target.chat': 'チャット',
       'ui.clonePlaceholder': 'GitHub のリポジトリ（owner/repo か URL）を入力して Enter。Esc でやめる',
       'ui.cloning': 'リポジトリを取得しています…',
+      'ui.attach': 'ファイルを添付（ドラッグ＆ドロップや画像の貼り付けでも）',
+      'ui.filesLocalOnly':
+        'ファイルは「PC で」のときだけ添付できます（クラウドやアプリのチャットには PC のファイルを渡せません）',
+      'ui.lookAtFiles': '添付したファイルを見てください',
       'ui.cloudLinked': 'クラウドセッションとつながりました。続けて送ると、このセッションに頼めます。',
       'ui.cloudInTerminal':
         '今の Claude Code では、新しいクラウドセッションはターミナルからしか始められないため、ターミナルで始めました。ターミナルは閉じても作業はクラウドで続きます。進み具合は Claude アプリのセッション一覧（クラウド連携をオンにしていればペットの一覧の ☁）で見られます。',
@@ -215,6 +219,10 @@
       'ui.target.chat': 'Chat',
       'ui.clonePlaceholder': 'GitHub repository (owner/repo or URL), then Enter. Esc to cancel',
       'ui.cloning': 'Getting the repository…',
+      'ui.attach': 'Attach files (or drop them, or paste an image)',
+      'ui.filesLocalOnly':
+        'Files can be attached only for "This PC" (the cloud and app chats cannot get files from this computer)',
+      'ui.lookAtFiles': 'Please look at the attached files',
       'ui.cloudLinked': 'Connected to the cloud session. What you send next goes to it.',
       'ui.cloudInTerminal':
         "Claude Code currently starts new cloud sessions only from a terminal, so the task was started in one. Closing it doesn't stop the work in the cloud. Follow it in the Claude app's session list (or under ☁ in the pet's list with cloud sessions turned on).",

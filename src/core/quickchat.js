@@ -10,6 +10,7 @@ const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const fs = require('fs');
 const os = require('os');
+const path = require('path');
 const { cleanEnv } = require('../shared/env');
 
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9-]{7,}$/;
@@ -56,6 +57,19 @@ function buildArgs({ resume, permissionMode, model, effort }) {
     args.push('--permission-mode', permissionMode);
   }
   return [...args, ...modelArgs({ model, effort })];
+}
+
+const ATTACHED_LABEL = '添付ファイル（Read ツールで読めます）:';
+
+/** Existing absolute file paths from what the user attached. */
+function attachedFiles(files) {
+  return (Array.isArray(files) ? files : []).filter((f) => {
+    try {
+      return typeof f === 'string' && path.isAbsolute(f) && fs.statSync(f).isFile();
+    } catch {
+      return false;
+    }
+  });
 }
 
 /** Error output as text; cmd.exe on Japanese Windows writes Shift_JIS, not UTF-8. */
@@ -106,7 +120,7 @@ class QuickChat extends EventEmitter {
     return Boolean(this.child);
   }
 
-  send({ prompt, cwd, resume, cloud = false, text = false }) {
+  send({ prompt, cwd, resume, cloud = false, text = false, files = [] }) {
     if (this.child) throw new Error('busy');
     if (!prompt || !String(prompt).trim()) throw new Error('empty prompt');
     const dir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
@@ -114,14 +128,21 @@ class QuickChat extends EventEmitter {
     const args = cloud
       ? buildCloudArgs({ resume, text, model: this.model, effort })
       : buildArgs({ resume, permissionMode: this.permissionMode, model: this.model, effort });
+    // attached files: their folders are opened to Claude Code and the paths go with the message
+    const attached = cloud ? [] : attachedFiles(files);
+    for (const folder of new Set(attached.map((f) => path.dirname(f)))) args.push('--add-dir', folder);
+    const message = attached.length
+      ? `${prompt}\n\n${ATTACHED_LABEL}\n${attached.map((f) => `- ${f}`).join('\n')}`
+      : String(prompt);
     const plain = cloud && (text || Boolean(resume)); // output is the reply as plain text
     const claude = typeof this.claudePath === 'function' ? this.claudePath() : this.claudePath;
     if (!claude) throw Object.assign(new Error('claude not found'), { code: 'CLAUDE_NOT_FOUND' });
 
-    // npm installs `claude.cmd` on Windows, which needs a shell. Arguments are validated above.
+    // npm installs `claude.cmd` on Windows, which needs a shell. Arguments are validated above;
+    // through the shell, ones with spaces (folders of attached files) are quoted.
     const useShell = process.platform === 'win32' && !/\.exe$/i.test(claude);
     const command = useShell && /\s/.test(claude) ? `"${claude}"` : claude;
-    const child = spawn(command, args, {
+    const child = spawn(command, useShell ? args.map((a) => (/\s/.test(a) ? `"${a}"` : a)) : args, {
       cwd: dir,
       env: cleanEnv(process.env, { CLAUDE_PET_SOURCE: 'quickchat' }),
       shell: useShell,
@@ -203,7 +224,7 @@ class QuickChat extends EventEmitter {
       // an older Claude Code without --effort: ask again without it
       if (effort && !sawOutput && code !== 0 && /unknown option.{0,4}--effort/i.test(errors)) {
         this.noEffort = true;
-        this.send({ prompt, cwd, resume, cloud, text });
+        this.send({ prompt, cwd, resume, cloud, text, files });
         return;
       }
       // older or newer CLIs may not stream a new cloud run as JSON: run it again as plain text
@@ -226,7 +247,7 @@ class QuickChat extends EventEmitter {
     });
 
     child.stdin.on('error', () => {});
-    child.stdin.end(String(prompt));
+    child.stdin.end(message);
     return { cwd: dir };
   }
 

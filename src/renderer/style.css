@@ -934,3 +934,57 @@ button {
 .session-text .md th {
   background: var(--surface);
 }
+
+/* files going with the next message */
+.composer-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  padding: 2px 4px 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip-x {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.msg-files {
+  margin-top: 4px;
+  font-size: 12px;
+  opacity: 0.9;
+  white-space: pre-wrap;
+}
+
+#composer-attach {
+  width: 24px;
+  height: 24px;
+  font-size: 14px;
+}
+
+/* messages for you while the input is open (a failed clone, files that can't go to the cloud) */
+.composer-notice {
+  margin-bottom: 6px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+}

@@ -781,9 +781,9 @@ function registerIpc() {
     }
   });
 
-  ipcMain.handle('quick-send', (_e, { prompt, cwd, resume, cloud }) => {
+  ipcMain.handle('quick-send', (_e, { prompt, cwd, resume, cloud, files }) => {
     try {
-      const { cwd: used } = quickChat.send({ prompt, cwd, resume, cloud: Boolean(cloud) });
+      const { cwd: used } = quickChat.send({ prompt, cwd, resume, cloud: Boolean(cloud), files });
       persist({ quickChat: { ...config.quickChat, cwd: used, recent: remember(config.quickChat.recent, used) } });
       return { ok: true, cwd: used };
     } catch (err) {
@@ -791,6 +791,22 @@ function registerIpc() {
     }
   });
   ipcMain.on('quick-stop', () => quickChat.stop());
+
+  ipcMain.handle('choose-files', async () => {
+    const result = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'] });
+    return result.canceled ? [] : result.filePaths;
+  });
+
+  // an image pasted into the input: kept as a file Claude Code can read
+  ipcMain.handle('save-pasted', (_e, data, type) => {
+    const ext = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' }[type];
+    if (!ext || !(data instanceof Uint8Array) || data.length > 20 * 1024 * 1024) return null;
+    const dir = path.join(homeDir(), 'attachments');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `pasted-${new Date().toISOString().replace(/[:.]/g, '-')}.${ext}`);
+    fs.writeFileSync(file, data);
+    return file;
+  });
 
   ipcMain.handle('choose-folder', async (_e, current) => {
     const result = await dialog.showOpenDialog(win, {

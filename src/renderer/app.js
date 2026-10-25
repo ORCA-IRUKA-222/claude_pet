@@ -46,6 +46,7 @@ const state = {
   // target: local (Claude Code here), cloud (a cloud session: cloudId, url) or chat (a new chat in the app)
   chat: { messages: [], sessionId: null, cwd: '', busy: false, target: 'local', cloudId: null, url: null },
   cloning: false, // the composer asks for a GitHub repository instead of a message
+  attachments: [], // files going with the next message (paths on this computer)
   temporary: null, // a one-off animation (wave, jump) that overrides the status animation
   toast: null, // { title, sub } shown in the bubble for a few seconds, e.g. when the pet changes
 };
@@ -161,6 +162,7 @@ function showToast(title, sub, ms = 6000) {
     state.toast = null;
     render();
   }, ms);
+  render();
 }
 
 // ------------------------------------------------------------------ rendering
@@ -174,8 +176,8 @@ function renderBubble() {
   const agg = state.aggregate;
   const s = agg.primary;
   const visible = state.config.showBubble && !state.config.mini && !state.panelOpen;
-  // Session news wins over the greeting toast.
-  if (visible && state.toast && agg.status === 'idle') {
+  // a message for you shows even with the list open (in the input when that is open)
+  if (state.toast && !state.composerOpen && !state.config.mini) {
     ui.bubble.hidden = false;
     ui.bubble.className = 'bubble status-idle toast';
     ui.bubbleTitle.textContent = state.toast.title;
@@ -341,6 +343,7 @@ function renderChat() {
     const text = m.role === 'assistant' && !m.error ? markdown(el('div', 'text md'), m.text) : el('span', 'text', m.text);
     text.dataset.placeholder = t('ui.waitingAnswer');
     bubble.appendChild(text);
+    if (m.files && m.files.length) bubble.appendChild(el('div', 'msg-files', m.files.map((f) => `📎 ${f}`).join('\n')));
     if (m.pending && m.tool) bubble.appendChild(el('span', 'tool', `${state.chat.target === 'cloud' ? '☁' : '🔧'} ${m.tool}`));
     log.appendChild(bubble);
   }
@@ -370,6 +373,31 @@ function placeholder(target) {
   return t(`ui.placeholder.${target}`, { model, effort: t(`effort.${effort}`) });
 }
 
+function renderAttachments() {
+  const box = $('composer-files');
+  box.replaceChildren();
+  box.hidden = !state.attachments.length;
+  for (const file of state.attachments) {
+    const chip = el('span', 'file-chip', `📎 ${basename(file)}`);
+    chip.title = file;
+    const x = el('button', 'chip-x', '×');
+    x.type = 'button';
+    x.addEventListener('click', () => {
+      state.attachments = state.attachments.filter((f) => f !== file);
+      render();
+    });
+    chip.appendChild(x);
+    box.appendChild(chip);
+  }
+  $('composer-attach').title = t('ui.attach');
+  $('composer-attach').hidden = state.cloning;
+}
+
+function addAttachments(files) {
+  for (const file of files) if (file && !state.attachments.includes(file)) state.attachments.push(file);
+  render();
+}
+
 function renderComposer() {
   ui.composer.hidden = !state.composerOpen;
   if (!state.composerOpen) return;
@@ -382,6 +410,10 @@ function renderComposer() {
   ui.composerTarget.hidden = state.cloning;
   ui.composerInput.placeholder = state.cloning ? t('ui.clonePlaceholder') : placeholder(target);
   ui.composerSend.disabled = state.chat.busy;
+  const notice = $('composer-notice');
+  notice.hidden = !state.toast;
+  notice.textContent = state.toast ? [state.toast.title, state.toast.sub].filter(Boolean).join(' — ') : '';
+  renderAttachments();
 }
 
 function render() {
@@ -529,14 +561,18 @@ async function cloneFromComposer() {
 
 async function sendQuick() {
   if (state.cloning) return cloneFromComposer();
-  const prompt = ui.composerInput.value.trim();
+  const files = state.attachments.slice();
+  // files on this computer can only go to Claude Code running here
+  if (files.length && state.chat.target !== 'local') return showToast(t('ui.filesLocalOnly'));
+  const prompt = ui.composerInput.value.trim() || (files.length ? t('ui.lookAtFiles') : '');
   if (!prompt || state.chat.busy) return;
   // a conversation that is working elsewhere (a terminal, the app) can be read but not answered here
   const live = state.sessions.find((s) => s.id === state.chat.sessionId && s.source !== 'quickchat');
   if (live && (live.effectiveStatus === 'running' || live.effectiveStatus === 'waiting')) return showToast(t('ui.busyElsewhere'));
   ui.composerInput.value = '';
+  state.attachments = [];
   const chat = state.chat;
-  chat.messages.push({ role: 'user', text: prompt });
+  chat.messages.push({ role: 'user', text: prompt, files: files.map(basename) });
   if (chat.target === 'chat') {
     // the answer comes in the Claude app (or claude.ai in the browser)
     const sent = await api.askInApp(prompt);
@@ -549,7 +585,13 @@ async function sendQuick() {
   openPanel('chat');
   playStatus();
   const cloud = chat.target === 'cloud';
-  const res = await api.quickSend(prompt, chat.cwd || state.config.quickChatCwd, cloud ? chat.cloudId : chat.sessionId, cloud);
+  const res = await api.quickSend(
+    prompt,
+    chat.cwd || state.config.quickChatCwd,
+    cloud ? chat.cloudId : chat.sessionId,
+    cloud,
+    files,
+  );
   if (!res.ok) handleQuickEvent({ type: 'error', message: res.error });
   else chat.cwd = res.cwd;
   render();
@@ -747,6 +789,28 @@ function setupControls() {
   ui.composerInput.addEventListener('input', reportSize);
   $('composer-close').addEventListener('click', closeComposer);
   ui.composerCwd.addEventListener('click', chooseWhere);
+  $('composer-attach').addEventListener('click', async () => addAttachments(await api.chooseFiles()));
+  // files dropped on the input, and images pasted into it
+  ui.composer.addEventListener('dragover', (e) => {
+    if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) e.preventDefault();
+  });
+  ui.composer.addEventListener('drop', (e) => {
+    if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+    e.preventDefault();
+    addAttachments([...e.dataTransfer.files].map((f) => api.pathForFile(f)));
+  });
+  ui.composerInput.addEventListener('paste', async (e) => {
+    const images = [...(e.clipboardData ? e.clipboardData.items : [])].filter(
+      (i) => i.kind === 'file' && i.type.startsWith('image/'),
+    );
+    if (!images.length) return;
+    e.preventDefault();
+    for (const item of images) {
+      const blob = item.getAsFile();
+      const file = blob && (await api.savePasted(new Uint8Array(await blob.arrayBuffer()), blob.type));
+      if (file) addAttachments([file]);
+    }
+  });
   ui.composerTarget.addEventListener('change', () => setTarget(ui.composerTarget.value));
 
   document.addEventListener('keydown', (e) => {
