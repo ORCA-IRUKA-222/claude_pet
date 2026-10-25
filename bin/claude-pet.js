@@ -36,6 +36,8 @@ const HELP = `claude-pet — Claude Code のデスクトップペット
                                  透過 PNG / WebP / GIF のイラストからペットを作成
                                  （--height は「大」サイズのときの高さ px。状態ごとに別の絵も指定可:
                                    idle, running, waiting, ready, failed）
+  claude-pet add-folder <フォルダ> [--group グループ] [--height 高さ]
+                                 フォルダの画像をまとめてペットにする（1 枚 = 1 人、グループ名はフォルダ名）
   claude-pet build <design.js> [--out <dir>] [--install]
                                  コードで描いたペットをスプライトシートに書き出し
 `;
@@ -584,6 +586,28 @@ async function main(argv) {
         autostart.disable();
         console.log('PC 起動時の自動起動をやめました');
       }
+      break;
+    }
+    case 'add-folder': {
+      const { importFolder } = require('../src/core/pets');
+      const folder = args.find((a, i) => !a.startsWith('--') && !['--group', '--height'].includes(args[i - 1]));
+      if (!folder || !fs.existsSync(folder) || !fs.statSync(folder).isDirectory())
+        throw new Error('画像の入ったフォルダを指定してください');
+      const result = importFolder(folder, { group: option(args, '--group'), height: option(args, '--height') || 320 });
+      console.log(`「${result.group}」に ${result.added.length} 人のペットを追加しました:`);
+      for (const pet of result.added) console.log(`  ${pet.displayName}（${pet.id}）`);
+      if (result.opaque.length) {
+        console.log('\n背景が透明ではない画像があります（四角く表示されます。背景を消した PNG にすると自然に見えます）:');
+        for (const file of result.opaque) console.log(`  ${path.basename(file)}`);
+      }
+      if (result.skipped.length) {
+        console.log('\n取り込めなかったもの:');
+        for (const s of result.skipped) {
+          const why = s.reason === 'jpeg' ? 'JPEG などは透明にできないので、背景を消した PNG / WebP にしてください' : s.reason;
+          console.log(`  ${path.basename(s.file)} — ${why}`);
+        }
+      }
+      if (result.added.length) console.log(`\n交代で表示するには: claude-pet rotate on --group "${result.group}" --every 60`);
       break;
     }
     case 'add-image': {

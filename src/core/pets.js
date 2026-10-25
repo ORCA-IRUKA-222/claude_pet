@@ -4,6 +4,7 @@
 //   atlas  pet.json + spritesheet (Codex / ChatGPT / Petdex format, 8 columns of 192x208 cells)
 //   image  pet.json + a single transparent PNG/WebP/GIF, animated by the app
 
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -188,4 +189,72 @@ function createImagePet(imagePath, { id: wantedId, name, description = '', group
   return loadPet(dir, 'custom');
 }
 
-module.exports = { petRoots, loadPet, listPets, findPet, createImagePet, slugify };
+/** Whether the picture has transparency; null when the format can't tell. */
+function hasAlpha(file) {
+  let data;
+  try {
+    data = fs.readFileSync(file);
+  } catch {
+    return null;
+  }
+  if (data.subarray(1, 4).toString('latin1') === 'PNG') {
+    const colorType = data[25];
+    if (colorType === 4 || colorType === 6) return true;
+    return data.indexOf('tRNS', 33, 'latin1') !== -1 && data.indexOf('tRNS', 33, 'latin1') < data.indexOf('IDAT', 33, 'latin1');
+  }
+  if (data.subarray(0, 4).toString('latin1') === 'RIFF' && data.subarray(8, 12).toString('latin1') === 'WEBP') {
+    const chunk = data.subarray(12, 16).toString('latin1');
+    if (chunk === 'VP8X') return Boolean(data[20] & 0x10);
+    if (chunk === 'VP8L') return Boolean((data[24] >> 4) & 0x01);
+    return false; // plain lossy WebP has no alpha
+  }
+  return null; // GIF: transparency is per frame
+}
+
+const IMAGE_FILE = /\.(png|webp|gif)$/i;
+const OTHER_IMAGE = /\.(jpe?g|bmp|avif|heic)$/i;
+const MAIN_NAMES = ['default', 'idle', 'pet', 'main'];
+
+/**
+ * Add every picture in a folder as a pet of one group: each image file is a pet, and each
+ * subfolder is a pet whose images are named after states (idle.png, running.png, …).
+ * Re-importing updates the same pets instead of adding copies.
+ */
+function importFolder(folder, { group = path.basename(path.resolve(folder)), height = null } = {}) {
+  const root = path.resolve(folder);
+  const result = { group, added: [], skipped: [], opaque: [] };
+  const existing = listPets().filter((p) => p.origin === 'custom');
+  const idFor = (name) => {
+    const same = existing.find((p) => p.displayName === name && (p.group || null) === group);
+    if (same) return same.id;
+    const slug = slugify(name);
+    const hash = crypto.createHash('sha1').update(`${group}/${name}`).digest('hex').slice(0, 8);
+    return slug.startsWith('pet-') ? `img-${hash}` : slug;
+  };
+  const add = (name, main, states = {}) => {
+    try {
+      const pet = createImagePet(main, { id: idFor(name), name, group, height, states });
+      result.added.push(pet);
+      for (const file of [main, ...Object.values(states)]) if (hasAlpha(file) === false) result.opaque.push(file);
+    } catch (err) {
+      result.skipped.push({ file: main, reason: err.message });
+    }
+  };
+  for (const entry of fs.readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name, 'ja'))) {
+    const full = path.join(root, entry.name);
+    if (entry.isFile() && IMAGE_FILE.test(entry.name)) add(entry.name.replace(IMAGE_FILE, ''), full);
+    else if (entry.isFile() && OTHER_IMAGE.test(entry.name)) result.skipped.push({ file: full, reason: 'jpeg' });
+    else if (entry.isDirectory()) {
+      const images = fs.readdirSync(full).filter((n) => IMAGE_FILE.test(n));
+      if (!images.length) continue;
+      const base = (n) => n.replace(IMAGE_FILE, '').toLowerCase();
+      const main = images.find((n) => MAIN_NAMES.includes(base(n))) || images.sort()[0];
+      const states = {};
+      for (const n of images) if (n !== main && IMAGE_STATES.has(base(n))) states[base(n)] = path.join(full, n);
+      add(entry.name, path.join(full, main), states);
+    }
+  }
+  return result;
+}
+
+module.exports = { petRoots, loadPet, listPets, findPet, createImagePet, importFolder, hasAlpha, slugify };
