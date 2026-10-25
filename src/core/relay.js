@@ -13,13 +13,13 @@ const { unseal } = require('../shared/seal');
 const SILENCE_MS = 2 * 60e3; // ntfy sends a keepalive every 45 seconds
 
 class RelayListener extends EventEmitter {
-  constructor({ server = 'https://ntfy.sh', topic, key, since = '1h' }) {
+  constructor({ server = 'https://ntfy.sh', topic, key, since = '12h', lastId = null }) {
     super();
     this.server = String(server).replace(/\/+$/, '');
     this.topic = topic;
     this.key = key;
     this.since = since;
-    this.lastId = null;
+    this.lastId = lastId; // resume after this message (ntfy keeps 12 hours)
     this.retry = 0;
     this.conn = null;
     this.timer = null;

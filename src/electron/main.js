@@ -31,6 +31,7 @@ const installer = require('../core/installer');
 const autostart = require('../core/autostart');
 const { findClaude, isClaudeExecutable } = require('../core/claude-path');
 const { RelayListener } = require('../core/relay');
+const { loadCloudSessions, saveCloudSessions } = require('../core/cloud-store');
 const { cloneRepo, remember } = require('../core/repos');
 const { version } = require('../../package.json');
 const { buildId } = require('../shared/build');
@@ -481,15 +482,32 @@ function quickChatToApp(ev) {
 
 // ---------------------------------------------------------------- cloud sessions
 
+let cloudSaveTimer = null;
+
+/** Remember the cloud sessions in the list, so they are back after a restart. */
+function saveCloudSoon() {
+  clearTimeout(cloudSaveTimer);
+  cloudSaveTimer = setTimeout(() => {
+    try {
+      saveCloudSessions(tracker.list(), relay ? relay.lastId : loadCloudSessions().lastId);
+    } catch (err) {
+      console.error('[claude-pet] cloud sessions:', err.message);
+    }
+  }, 2000);
+}
+
 function startRelay() {
   if (relay) relay.stop();
   relay = null;
   const { enabled, server, topic, key } = config.cloud || {};
   if (!enabled || !topic || !key) return;
-  relay = new RelayListener({ server, topic, key });
+  const stored = loadCloudSessions();
+  tracker.seed(stored.sessions.map((s) => ({ ...s, source: 'cloud' })));
+  relay = new RelayListener({ server, topic, key, lastId: stored.lastId });
   relay.on('event', (event) => {
     tracker.handle({ ...event, source: 'cloud' });
     linkCloudTask(event);
+    saveCloudSoon();
   });
   relay.start();
 }
@@ -845,6 +863,7 @@ async function boot() {
   setInterval(checkRotation, 30e3).unref();
   readAutostart();
   tracker.on('change', pushState);
+  tracker.on('change', () => relay && saveCloudSoon()); // e.g. a cloud session removed from the list
   // Past Claude Code conversations, so the list isn't empty before the first hook event.
   const loadHistory = () => {
     try {

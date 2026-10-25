@@ -84,7 +84,13 @@ class SessionTracker extends EventEmitter {
 
     const id = e.session_id;
     if (e.event === 'SessionEnd') {
-      if (this.sessions.delete(id)) this.emit('change');
+      const ended = this.sessions.get(id);
+      // a cloud session ends when its container stops; it stays listed, to be opened in the app
+      if (ended && ended.source === 'cloud' && ended.url) {
+        this.setIdle(ended);
+        ended.history = true;
+        this.emit('change');
+      } else if (this.sessions.delete(id)) this.emit('change');
       return null;
     }
 
@@ -270,8 +276,9 @@ class SessionTracker extends EventEmitter {
     for (const h of list || []) {
       if (!h || !h.id || this.sessions.has(h.id)) continue;
       // `claude -p` runs (entrypoint sdk-cli) are the pet's quick chats
-      const source = h.entrypoint === 'sdk-cli' ? 'quickchat' : 'cli';
+      const source = h.source || (h.entrypoint === 'sdk-cli' ? 'quickchat' : 'cli');
       const s = newSession(h.id, h.cwd, h.updatedAt, { history: true, source, entrypoint: h.entrypoint || null });
+      if (typeof h.url === 'string' && /^https:\/\/claude\.ai\//.test(h.url)) s.url = h.url;
       Object.assign(s, {
         title: h.title || null,
         prompt: h.prompt || null,
