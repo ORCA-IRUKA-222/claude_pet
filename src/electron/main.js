@@ -483,13 +483,30 @@ function quickChatToApp(ev) {
 // ---------------------------------------------------------------- cloud sessions
 
 let cloudSaveTimer = null;
+// What each cloud session said, as far as the relay carried it (prompts and final replies):
+// the pet shows this when a cloud session is opened in it.
+const cloudLogs = new Map();
+const cloudIdOf = (url) => (/\/code\/(session_[A-Za-z0-9]+)/.exec(String(url || '')) || [])[1] || null;
+
+function appendCloudLog(e) {
+  const role = e.event === 'UserPromptSubmit' ? 'user' : e.event === 'Stop' ? 'assistant' : null;
+  const text = role === 'user' ? e.prompt : e.message;
+  if (!role || typeof text !== 'string' || !text.trim()) return;
+  const log = cloudLogs.get(e.session_id) || [];
+  const last = log[log.length - 1];
+  if (last && last.role === role && last.text === text) return; // the same event again
+  log.push({ role, text });
+  cloudLogs.set(e.session_id, log.slice(-40));
+  sendToRenderer('quick-event', { type: 'cloud-message', cloudId: cloudIdOf(e.url), role, text });
+}
 
 /** Remember the cloud sessions in the list, so they are back after a restart. */
 function saveCloudSoon() {
   clearTimeout(cloudSaveTimer);
   cloudSaveTimer = setTimeout(() => {
     try {
-      saveCloudSessions(tracker.list(), relay ? relay.lastId : loadCloudSessions().lastId);
+      const sessions = tracker.list().map((s) => (s.source === 'cloud' ? { ...s, messages: cloudLogs.get(s.id) || [] } : s));
+      saveCloudSessions(sessions, relay ? relay.lastId : loadCloudSessions().lastId);
     } catch (err) {
       console.error('[claude-pet] cloud sessions:', err.message);
     }
@@ -503,9 +520,11 @@ function startRelay() {
   if (!enabled || !topic || !key) return;
   const stored = loadCloudSessions();
   tracker.seed(stored.sessions.map((s) => ({ ...s, source: 'cloud' })));
+  for (const s of stored.sessions) if (Array.isArray(s.messages) && !cloudLogs.has(s.id)) cloudLogs.set(s.id, s.messages);
   relay = new RelayListener({ server, topic, key, lastId: stored.lastId });
   relay.on('event', (event) => {
     tracker.handle({ ...event, source: 'cloud' });
+    appendCloudLog(event);
     linkCloudTask(event);
     saveCloudSoon();
   });
@@ -722,6 +741,18 @@ function registerIpc() {
 
   // a past conversation, to continue it in the quick chat
   ipcMain.handle('open-chat', (_e, sessionId) => {
+    // a cloud session: what the relay carried, and its claude.ai session to send follow-ups to
+    const cloud = tracker.list().find((s) => s.id === sessionId && s.source === 'cloud');
+    if (cloud) {
+      const cloudId = cloudIdOf(cloud.url);
+      if (!cloudId) return { ok: false, error: t('ui.chatNotFound') };
+      const fallback = [
+        ...(cloud.prompt ? [{ role: 'user', text: cloud.prompt }] : []),
+        ...(cloud.message ? [{ role: 'assistant', text: cloud.message }] : []),
+      ];
+      const log = cloudLogs.get(sessionId);
+      return { ok: true, cloud: true, cloudId, url: cloud.url, messages: log && log.length ? log : fallback };
+    }
     const file = findTranscript(String(sessionId || ''));
     if (!file) return { ok: false, error: t('ui.chatNotFound') };
     return { ok: true, sessionId, ...readConversation(file) };

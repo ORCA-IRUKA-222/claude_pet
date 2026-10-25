@@ -60,3 +60,12 @@ test('a cloud session that ends stays in the list; a local one goes', () => {
   assert.deepEqual(ids, ['c1']);
   assert.equal(tracker.list()[0].effectiveStatus, 'idle');
 });
+
+test('what a cloud session said is kept with it, the latest exchanges only', () => {
+  const now = Date.now();
+  const messages = Array.from({ length: 30 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', text: `m${i}` }));
+  saveCloudSessions([cloud('M', 1000, { messages })], 'm1', { now });
+  const [stored] = loadCloudSessions({ now }).sessions;
+  assert.equal(stored.messages.length, 20);
+  assert.equal(stored.messages[19].text, 'm29');
+});

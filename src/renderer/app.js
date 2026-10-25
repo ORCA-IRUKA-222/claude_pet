@@ -290,8 +290,8 @@ function renderSessions() {
     // app and a browser chat in the browser; a cloud row without a link only has its summary
     row.addEventListener('click', () => {
       if (s.effectiveStatus === 'ready') api.markRead(s.id);
-      if (s.url) return api.openUrl(s.url, s.source === 'cloud');
-      if (s.source === 'cloud' || s.source === 'browser') return toggle();
+      if (s.source === 'browser') return s.url ? api.openUrl(s.url) : toggle();
+      if (s.source === 'cloud' && !s.url) return toggle(); // e.g. the relay test: nothing to open
       continueInChat(s.id);
     });
     item.appendChild(row);
@@ -435,19 +435,15 @@ function closeComposer() {
 
 /** Load a past conversation into the quick chat; what you send next continues it. */
 async function continueInChat(id) {
-  if (state.chat.sessionId !== id) {
+  if (state.chat.sessionId !== id && state.chat.openedFrom !== id) {
     if (state.chat.busy) return showToast(t('ui.chatBusy'));
     const res = await api.openChat(id);
     if (!res.ok) return showToast(t('ui.chatNotFound'), res.error);
-    state.chat = {
-      messages: res.messages,
-      sessionId: id,
-      cwd: res.cwd || state.chat.cwd,
-      busy: false,
-      target: 'local',
-      cloudId: null,
-      url: null,
-    };
+    const base = { messages: res.messages, busy: false, openedFrom: id };
+    state.chat = res.cloud
+      ? // a cloud session: what you send next goes to it (claude -p --cloud)
+        { ...base, sessionId: null, cwd: state.chat.cwd, target: 'cloud', cloudId: res.cloudId, url: res.url }
+      : { ...base, sessionId: id, cwd: res.cwd || state.chat.cwd, target: 'local', cloudId: null, url: null };
   }
   openPanel('chat');
   openComposer();
@@ -587,6 +583,14 @@ function handleQuickEvent(ev) {
         chat.messages.push({ role: 'assistant', text: t('ui.cloudLinked') });
       }
       break;
+    case 'cloud-message': {
+      // the open cloud session said something (here or in the app): show it unless it's already there
+      if (!ev.cloudId || chat.cloudId !== ev.cloudId || chat.busy) break;
+      const last = [...chat.messages].reverse().find((m) => m.role === ev.role);
+      if (last && (last.text === ev.text || last.text.startsWith(ev.text.slice(0, 80)))) break;
+      chat.messages.push({ role: ev.role, text: ev.text });
+      break;
+    }
     case 'interactive-only': // this Claude Code starts cloud sessions in a terminal only
       if (reply) {
         reply.text = t('ui.cloudInTerminal');
