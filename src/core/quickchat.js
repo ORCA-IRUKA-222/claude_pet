@@ -204,7 +204,8 @@ class QuickChat extends EventEmitter {
         this.send({ prompt, cwd, cloud: true, text: true });
         return;
       }
-      // versions that start new cloud sessions only interactively: the caller opens a terminal
+      // Claude Code starts new cloud sessions only interactively (headless start is switched off in
+      // released builds): the caller opens a terminal for it
       if (cloud && !resume && code !== 0 && /interactive only|cannot be combined with --print/i.test(errors)) {
         this.emit('event', { type: 'interactive-only', prompt: String(prompt), cwd: dir });
         this.emit('event', { type: 'done', sessionId: null, cwd: dir, cloud });
