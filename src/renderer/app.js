@@ -234,7 +234,7 @@ function sessionActions(s) {
   // cloud sessions and browser chats live on claude.ai, not on this computer
   if (s.url) add(t('ui.openInBrowser'), () => api.openUrl(s.url));
   else {
-    if (s.effectiveStatus !== 'running' && s.effectiveStatus !== 'waiting') add(t('ui.continueHere'), () => continueInChat(s.id));
+    add(t('ui.continueHere'), () => continueInChat(s.id));
     add(t('ui.openInApp'), () => openInApp(s.id, s.cwd));
     add(t('ui.openTerminal'), async (b) => {
       b.disabled = true;
@@ -280,12 +280,26 @@ function renderSessions() {
     main.appendChild(name);
     row.title = s.project ? `${sessionName(s)}\n${s.project}` : sessionName(s);
     row.appendChild(main);
-    row.addEventListener('click', () => {
+    const toggle = () => {
       state.expanded = expanded ? null : s.id;
       if (!expanded && s.effectiveStatus === 'ready') api.markRead(s.id);
       renderPanel();
+    };
+    // a conversation on this computer opens in full; cloud and browser ones only have a summary here
+    row.addEventListener('click', () => {
+      if (s.url) return toggle();
+      if (s.effectiveStatus === 'ready') api.markRead(s.id);
+      continueInChat(s.id);
     });
     item.appendChild(row);
+    const more = el('button', 'icon-button session-more', expanded ? '▴' : '⋯');
+    more.type = 'button';
+    more.title = t('ui.moreActions');
+    more.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggle();
+    });
+    item.appendChild(more);
 
     if (expanded) {
       const body = el('div', 'session-body');
@@ -516,6 +530,9 @@ async function sendQuick() {
   if (state.cloning) return cloneFromComposer();
   const prompt = ui.composerInput.value.trim();
   if (!prompt || state.chat.busy) return;
+  // a conversation that is working elsewhere (a terminal, the app) can be read but not answered here
+  const live = state.sessions.find((s) => s.id === state.chat.sessionId && s.source !== 'quickchat');
+  if (live && (live.effectiveStatus === 'running' || live.effectiveStatus === 'waiting')) return showToast(t('ui.busyElsewhere'));
   ui.composerInput.value = '';
   const chat = state.chat;
   chat.messages.push({ role: 'user', text: prompt });
@@ -559,6 +576,13 @@ function handleQuickEvent(ev) {
       break;
     case 'note': // progress of a cloud run
       if (reply) reply.tool = ev.text;
+      break;
+    case 'cloud-linked': // the cloud session a terminal started for this chat; follow-ups go to it
+      if (chat.target === 'cloud' && !chat.cloudId && chat.messages.some((m) => m.role === 'user' && m.text === ev.prompt)) {
+        chat.cloudId = ev.cloudSessionId;
+        chat.url = ev.url;
+        chat.messages.push({ role: 'assistant', text: t('ui.cloudLinked') });
+      }
       break;
     case 'interactive-only': // this Claude Code starts cloud sessions in a terminal only
       if (reply) {

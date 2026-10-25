@@ -82,11 +82,37 @@ quickChat.on('event', (ev) => {
   sendToRenderer('quick-event', ev);
   quickChatToApp(ev);
   if (ev.type === 'interactive-only') {
-    openCloudTask({ cwd: ev.cwd, claudePath: claudeCommand(), task: ev.prompt, extraArgs: terminalModelArgs() }).catch((err) =>
+    pendingCloudTasks.push({ prompt: ev.prompt, at: Date.now() });
+    const opts = { cwd: ev.cwd, claudePath: claudeCommand(), task: ev.prompt, extraArgs: terminalModelArgs() };
+    openCloudTask({ ...opts, template: config.terminalCommand }).catch((err) =>
       sendToRenderer('quick-event', { type: 'error', message: err.message }),
     );
   }
 });
+
+// Cloud tasks started in a terminal, waiting to learn their cloud session from the relay so
+// the quick chat can send follow-ups to it (claude -p --cloud <session>).
+const pendingCloudTasks = [];
+const sameStart = (a, b) => {
+  const norm = (s) =>
+    String(s || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/…$/, '');
+  const x = norm(a);
+  const y = norm(b);
+  const n = Math.min(x.length, y.length, 60);
+  return n > 0 && x.slice(0, n) === y.slice(0, n);
+};
+
+function linkCloudTask(event) {
+  if (event.event !== 'UserPromptSubmit' || typeof event.url !== 'string') return;
+  const m = /\/code\/(session_[A-Za-z0-9]+)$/.exec(event.url);
+  const i = pendingCloudTasks.findIndex((p) => Date.now() - p.at < 30 * 60e3 && sameStart(p.prompt, event.prompt));
+  if (!m || i < 0) return;
+  const [task] = pendingCloudTasks.splice(i, 1);
+  sendToRenderer('quick-event', { type: 'cloud-linked', prompt: task.prompt, cloudSessionId: m[1], url: event.url });
+}
 
 function persist(changes) {
   Object.assign(config, changes);
@@ -461,7 +487,10 @@ function startRelay() {
   const { enabled, server, topic, key } = config.cloud || {};
   if (!enabled || !topic || !key) return;
   relay = new RelayListener({ server, topic, key });
-  relay.on('event', (event) => tracker.handle({ ...event, source: 'cloud' }));
+  relay.on('event', (event) => {
+    tracker.handle({ ...event, source: 'cloud' });
+    linkCloudTask(event);
+  });
   relay.start();
 }
 

@@ -601,6 +601,22 @@ button {
   min-width: 0;
 }
 
+/* sits over the right end of the row (a button can't hold another button) */
+.session {
+  position: relative;
+}
+
+.session-row {
+  padding-right: 30px;
+}
+
+.session-more {
+  position: absolute;
+  top: 3px;
+  right: 2px;
+  font-size: 13px;
+}
+
 .session-name {
   display: flex;
   gap: 6px;
