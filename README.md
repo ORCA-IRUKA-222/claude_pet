@@ -43,10 +43,12 @@ claude-pet              # ペットを起動
 ### 更新する
 
 ```bash
-cd claude_pet
-git pull
-claude-pet              # 古いペットが動いていれば、新しいバージョンで起動し直します
+claude-pet update
 ```
+
+`git pull` で最新版を取り込み、必要なら `npm ci` を実行して、ペットを新しいバージョンで起動し直します。`npm link` や `npm install` が書き換えた手元のファイルは `git stash` に退避するので、`git pull` が止まることはありません。
+
+手動で `git pull` した場合も、`claude-pet` を実行すれば古いペットを新しいバージョンで起動し直します。
 
 ### うまく動かないとき
 
