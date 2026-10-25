@@ -32,7 +32,7 @@ const autostart = require('../core/autostart');
 const { findClaude, isClaudeExecutable } = require('../core/claude-path');
 const { RelayListener } = require('../core/relay');
 const { loadCloudSessions, saveCloudSessions } = require('../core/cloud-store');
-const { cloneRepo, remember } = require('../core/repos');
+const { cloneRepo, remember, listGitHubRepos, isCloned } = require('../core/repos');
 const { version } = require('../../package.json');
 const { buildId } = require('../shared/build');
 
@@ -840,6 +840,18 @@ function registerIpc() {
         menu.popup({ window: win, callback: () => setTimeout(() => resolve(picked), 0) });
       }),
   );
+
+  // your GitHub repositories to pick from (kept for ten minutes)
+  let repoCache = null;
+  ipcMain.handle('list-repos', async () => {
+    try {
+      if (!repoCache || Date.now() - repoCache.at > 10 * 60e3) repoCache = { at: Date.now(), ...(await listGitHubRepos()) };
+      return { ok: true, repos: repoCache.repos.map((r) => ({ ...r, cloned: isCloned(r.fullName) })) };
+    } catch (err) {
+      repoCache = null;
+      return { ok: false, error: err.code === 'NO_GITHUB' ? t('error.noGitHub') : err.message };
+    }
+  });
 
   ipcMain.handle('clone-repo', async (_e, text) => {
     try {

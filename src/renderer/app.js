@@ -46,6 +46,7 @@ const state = {
   // target: local (Claude Code here), cloud (a cloud session: cloudId, url) or chat (a new chat in the app)
   chat: { messages: [], sessionId: null, cwd: '', busy: false, target: 'local', cloudId: null, url: null },
   cloning: false, // the composer asks for a GitHub repository instead of a message
+  repos: { loading: false, list: [], index: 0 }, // your GitHub repositories, to pick one while cloning
   attachments: [], // files going with the next message (paths on this computer)
   temporary: null, // a one-off animation (wave, jump) that overrides the status animation
   toast: null, // { title, sub } shown in the bubble for a few seconds, e.g. when the pet changes
@@ -410,6 +411,7 @@ function renderComposer() {
   ui.composerTarget.hidden = state.cloning;
   ui.composerInput.placeholder = state.cloning ? t('ui.clonePlaceholder') : placeholder(target);
   ui.composerSend.disabled = state.chat.busy;
+  renderRepos();
   const notice = $('composer-notice');
   notice.hidden = !state.toast;
   notice.textContent = state.toast ? [state.toast.title, state.toast.sub].filter(Boolean).join(' — ') : '';
@@ -512,11 +514,15 @@ function setTarget(target) {
   if (state.chat.messages.length) newChat();
   state.chat.target = target;
   render();
+  // the cloud needs a repository; offer yours when none is chosen yet
+  const cwd = state.chat.cwd || state.config.quickChatCwd;
+  if (target === 'cloud' && (!cwd || cwd === state.config.home)) chooseWhere();
 }
 
 async function chooseWhere() {
   const current = state.chat.cwd || state.config.quickChatCwd;
-  const pick = await api.folderMenu(current);
+  // a cloud task works on a GitHub repository: go straight to your repositories
+  const pick = state.chat.target === 'cloud' ? { clone: true } : await api.folderMenu(current);
   let folder = pick && pick.dir;
   if (pick && pick.choose) {
     folder = await api.chooseFolder(current);
@@ -524,8 +530,13 @@ async function chooseWhere() {
   if (pick && pick.clone) {
     state.cloning = true;
     ui.composerInput.value = '';
+    state.repos = { loading: !state.repos.list.length, list: state.repos.list, index: 0 };
     render();
     ui.composerInput.focus();
+    const res = await api.listRepos();
+    state.repos = { loading: false, list: res.ok ? res.repos : [], index: 0 };
+    if (!res.ok) showToast(t('ui.reposFailed'), res.error);
+    render();
     return;
   }
   if (folder) setFolder(folder);
@@ -540,6 +551,37 @@ function setFolder(folder) {
   }
   state.chat.cwd = folder;
   render();
+}
+
+/** Your repositories that match what is typed, most recently pushed first. */
+function matchingRepos() {
+  const q = ui.composerInput.value.trim().toLowerCase();
+  return state.repos.list.filter((r) => !q || r.fullName.toLowerCase().includes(q)).slice(0, 8);
+}
+
+function renderRepos() {
+  const box = $('composer-repos');
+  box.replaceChildren();
+  box.hidden = !state.cloning;
+  if (!state.cloning) return;
+  if (state.repos.loading) return box.appendChild(el('div', 'repo-note', t('ui.reposLoading')));
+  const repos = matchingRepos();
+  if (!repos.length && state.repos.list.length) box.appendChild(el('div', 'repo-note', t('ui.reposNone')));
+  repos.forEach((r, i) => {
+    const item = el('button', `repo-item${i === state.repos.index ? ' active' : ''}`);
+    item.type = 'button';
+    item.appendChild(el('span', 'repo-name', `${r.private ? '🔒 ' : ''}${r.fullName}`));
+    if (r.cloned) item.appendChild(el('span', 'repo-badge', t('ui.repoCloned')));
+    if (r.description) item.appendChild(el('span', 'repo-desc', r.description));
+    item.addEventListener('mousedown', (e) => e.preventDefault()); // keep the input focused
+    item.addEventListener('click', () => pickRepo(r.fullName));
+    box.appendChild(item);
+  });
+}
+
+function pickRepo(fullName) {
+  ui.composerInput.value = fullName;
+  cloneFromComposer();
 }
 
 async function cloneFromComposer() {
@@ -781,12 +823,27 @@ function setupControls() {
     sendQuick();
   });
   ui.composerInput.addEventListener('keydown', (e) => {
+    if (state.cloning && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      // move through your repositories
+      e.preventDefault();
+      const n = matchingRepos().length;
+      if (n) state.repos.index = (state.repos.index + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+      return renderRepos();
+    }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
+      const highlighted = state.cloning && matchingRepos()[state.repos.index];
+      if (highlighted) return pickRepo(highlighted.fullName);
       sendQuick();
     }
   });
-  ui.composerInput.addEventListener('input', reportSize);
+  ui.composerInput.addEventListener('input', () => {
+    if (state.cloning) {
+      state.repos.index = 0;
+      renderRepos();
+    }
+    reportSize();
+  });
   $('composer-close').addEventListener('click', closeComposer);
   ui.composerCwd.addEventListener('click', chooseWhere);
   $('composer-attach').addEventListener('click', async () => addAttachments(await api.chooseFiles()));

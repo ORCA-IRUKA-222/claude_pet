@@ -988,3 +988,58 @@ button {
   font-size: 12px;
   line-height: 1.5;
 }
+
+/* your GitHub repositories, while picking one */
+.composer-repos {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  overflow-y: auto;
+  margin-bottom: 6px;
+}
+
+.repo-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.repo-item:hover,
+.repo-item.active {
+  background: var(--surface-2);
+}
+
+.repo-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.repo-badge {
+  font-size: 11px;
+  color: var(--ready);
+}
+
+.repo-desc {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-note {
+  padding: 4px 8px;
+  color: var(--muted);
+  font-size: 12px;
+}

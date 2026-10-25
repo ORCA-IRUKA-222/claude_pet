@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('pet', {
   askInApp: (prompt) => ipcRenderer.invoke('ask-in-app', prompt),
   folderMenu: (current) => ipcRenderer.invoke('folder-menu', current),
   cloneRepo: (text) => ipcRenderer.invoke('clone-repo', text),
+  listRepos: () => ipcRenderer.invoke('list-repos'),
   setQuickTarget: (target) => ipcRenderer.send('quick-target', target),
   quickStop: () => ipcRenderer.send('quick-stop'),
   chooseFolder: (current) => ipcRenderer.invoke('choose-folder', current),
