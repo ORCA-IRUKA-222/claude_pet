@@ -79,7 +79,8 @@ function timeAgo(ms) {
   const minutes = Math.floor((Date.now() - ms) / 60000);
   if (minutes < 1) return t('ui.justNow');
   if (minutes < 60) return t('ui.minutesAgo', { n: minutes });
-  return t('ui.hoursAgo', { n: Math.floor(minutes / 60) });
+  if (minutes < 24 * 60) return t('ui.hoursAgo', { n: Math.floor(minutes / 60) });
+  return t('ui.daysAgo', { n: Math.floor(minutes / (24 * 60)) });
 }
 
 function sessionName(s) {
@@ -364,6 +365,8 @@ function openPanel(tab) {
 function closePanel() {
   state.panelOpen = false;
   state.expanded = null;
+  // an empty quick-chat box goes away with the panel
+  if (!state.chat.busy && !ui.composerInput.value.trim()) state.composerOpen = false;
   render();
 }
 
@@ -556,6 +559,7 @@ function setupControls() {
     }
   });
   ui.composerInput.addEventListener('input', reportSize);
+  $('composer-close').addEventListener('click', closeComposer);
   ui.composerCwd.addEventListener('click', async () => {
     const folder = await api.chooseFolder(state.chat.cwd || state.config.quickChatCwd);
     if (folder) {

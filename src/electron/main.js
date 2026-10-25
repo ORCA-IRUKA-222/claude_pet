@@ -24,6 +24,7 @@ const { SessionTracker } = require('../core/sessions');
 const { startServer } = require('../core/server');
 const { listPets, findPet } = require('../core/pets');
 const { QuickChat } = require('../core/quickchat');
+const { recentSessions } = require('../core/history');
 const rotation = require('../core/rotation');
 const { openInTerminal } = require('../core/terminal');
 const installer = require('../core/installer');
@@ -577,6 +578,16 @@ async function boot() {
   // Checked often so the switch happens on time even after the computer wakes from sleep.
   setInterval(checkRotation, 30e3).unref();
   tracker.on('change', pushState);
+  // Past Claude Code conversations, so the list isn't empty before the first hook event.
+  const loadHistory = () => {
+    try {
+      tracker.seed(recentSessions());
+    } catch {
+      // unreadable transcripts shouldn't stop the pet
+    }
+  };
+  loadHistory();
+  setInterval(loadHistory, 10 * 60e3).unref();
   tracker.on('transition', notifyTransition);
   setInterval(() => tracker.prune(), 60e3).unref();
 

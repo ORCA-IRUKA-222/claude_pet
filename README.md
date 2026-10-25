@@ -50,7 +50,7 @@ claude-pet              # ペットを起動
 | 吹き出しをクリック | セッション一覧を開く |
 | `Ctrl+Alt+P`（macOS は `Cmd+Option+P`） | ペットの表示 / 非表示 |
 | `Ctrl+Alt+C`（macOS は `Cmd+Option+C`） | クイックチャットを開く |
-| `Esc` | 入力欄・一覧を閉じる |
+| `Esc` / ✕ | 入力欄・一覧を閉じる（一覧を閉じると空の入力欄も一緒に閉じます） |
 
 ### 状態の見方
 
@@ -69,6 +69,8 @@ claude-pet              # ペットを起動
 ![セッション一覧](docs/panel.png)
 
 項目を開くと、最後のプロンプトと Claude の返答が読めます。「ターミナルで開く」で `claude --resume <セッション>` を新しいターミナルで開きます。
+
+ペットを起動する前の会話も、Claude Code の会話記録（`~/.claude/projects/`）から直近 3 日分・最大 15 件を読み込んで一覧に出します（10 分ごとに読み直し）。対象は Claude Code の会話だけで、claude.ai や Claude アプリでのチャットは含まれません。
 
 ### クイックチャット
 
@@ -239,6 +241,7 @@ npm run build:pet    # tools/designs/mochi.js から pets/mochi とアイコン�
 | --- | --- |
 | `src/hook/pet-hook.js` | Claude Code から呼ばれるフック |
 | `src/core/sessions.js` | フックのイベントからセッションの状態を決める |
+| `src/core/history.js` | 起動前の会話を会話記録から読み込む |
 | `src/core/server.js` | ローカルの受け口 |
 | `src/core/quickchat.js` | クイックチャット（`claude -p --output-format stream-json`） |
 | `src/core/installer.js` | `setup` / `uninstall` |
