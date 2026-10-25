@@ -40,6 +40,22 @@ claude-pet              # ペットを起動
 
 `setup` は `~/.claude/settings.json` に Claude Pet のフックを**追記**します（既存の設定やフックはそのまま残り、元のファイルは `settings.json.claude-pet.bak` にバックアップされます）。設定は次に起動した Claude Code のセッションから有効になります。
 
+### 更新する
+
+```bash
+cd claude_pet
+git pull
+claude-pet              # 古いペットが動いていれば、新しいバージョンで起動し直します
+```
+
+### うまく動かないとき
+
+```bash
+claude-pet doctor
+```
+
+ペット本体が最新か、`claude` コマンドの場所、フックの登録、このPCにある Claude Code の会話記録の数、自動起動の設定を表示します。
+
 ### PC 起動時に自動で起動する
 
 ```bash
@@ -78,13 +94,15 @@ claude-pet autostart on     # やめるときは off、今の設定は autostart
 
 項目を開くと、最後のプロンプトと Claude の返答が読めます。「ターミナルで開く」で `claude --resume <セッション>` を新しいターミナルで開きます。
 
-ペットを起動する前の会話も、Claude Code の会話記録（`~/.claude/projects/`）から直近 3 日分・最大 15 件を読み込んで一覧に出します（10 分ごとに読み直し）。対象は Claude Code の会話だけで、claude.ai や Claude アプリでのチャットは含まれません。
+ペットを起動する前の会話も、Claude Code の会話記録（`~/.claude/projects/`）から直近 7 日分・最大 20 件を読み込んで一覧に出します（10 分ごとに読み直し）。対象は Claude Code の会話だけで、claude.ai や Claude アプリでのチャットは含まれません。
 
 ### クイックチャット
 
 ![クイックチャット](docs/quickchat.png)
 
 ペットから直接 Claude Code に質問できます（内部では `claude -p` を使います）。続けて送ると同じ会話の続きになります。📁 ボタンで作業フォルダを選べます。
+
+`claude` コマンドは PATH のほか、よくあるインストール先（Windows は `%USERPROFILE%\.local\bin` や `%APPDATA%\npm`）からも探します。Claude Code を一度使うと、フックが Claude Code の場所をペットに伝えるので、PC 起動時に自動で起動した場合でも見つかります。どうしても見つからないときは、設定の `claudePath` に場所を書いてください。
 
 クイックチャットは軽い質問向けです。ファイル編集などの許可が必要な作業は自動では許可されないので、「ターミナルで続ける」でいつもの Claude Code に引き継いでください。
 
