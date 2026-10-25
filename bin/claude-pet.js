@@ -428,6 +428,23 @@ async function cloudCommand([action = 'status'] = []) {
   }
 }
 
+/** " (2.1.310)" for the found claude, or "" when it can't tell. */
+function claudeVersion(claude) {
+  try {
+    const out = execFileSync(claude, ['--version'], {
+      encoding: 'utf8',
+      timeout: 15000,
+      windowsHide: true,
+      shell: process.platform === 'win32' && !/\.exe$/i.test(claude),
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const m = /\d+\.\d+\.\d+/.exec(out);
+    return m ? `（${m[0]}）` : '';
+  } catch {
+    return '';
+  }
+}
+
 async function doctor() {
   const { findClaude } = require('../src/core/claude-path');
   const { transcriptFiles, readSession } = require('../src/core/history');
@@ -449,7 +466,10 @@ async function doctor() {
           ? '古いバージョンが動いています（claude-pet で再起動されます）'
           : `起動中（${local || running.version}）`,
     ],
-    ['Claude Code', claude || '見つかりません（クイックチャットと「ターミナルで続ける」が使えません）'],
+    [
+      'Claude Code',
+      claude ? `${claude}${claudeVersion(claude)}` : '見つかりません（クイックチャットと「ターミナル」が使えません）',
+    ],
     ['フック', installer.isInstalled() ? '登録済み' : '未登録（claude-pet setup を実行してください）'],
     [
       '会話記録',

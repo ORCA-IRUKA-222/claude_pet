@@ -55,6 +55,8 @@
       'ui.target.chat': 'チャット',
       'ui.clonePlaceholder': 'GitHub のリポジトリ（owner/repo か URL）を入力して Enter。Esc でやめる',
       'ui.cloning': 'リポジトリを取得しています…',
+      'ui.cloudInTerminal':
+        'この PC の Claude Code はペットから直接クラウドセッションを始められない版なので、ターミナルで始めました。進み具合は Claude アプリのセッション一覧で見られます。Claude Code を更新（claude update）すると、ペットだけで始められるようになります。',
       'ui.cloneFailed': 'リポジトリを取得できませんでした',
       'ui.cloned': 'リポジトリを用意しました',
       'ui.sentToApp': 'Claude アプリの新しいチャットに送りました。返事はアプリで見られます。',
@@ -194,6 +196,8 @@
       'ui.target.chat': 'Chat',
       'ui.clonePlaceholder': 'GitHub repository (owner/repo or URL), then Enter. Esc to cancel',
       'ui.cloning': 'Getting the repository…',
+      'ui.cloudInTerminal':
+        "This computer's Claude Code can't start a cloud session from the pet, so it was started in a terminal. Follow it in the Claude app's session list. After `claude update`, the pet can start them on its own.",
       'ui.cloneFailed': 'Could not get the repository',
       'ui.cloned': 'Repository ready',
       'ui.sentToApp': 'Sent to a new chat in the Claude app. The answer is there.',

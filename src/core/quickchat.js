@@ -177,9 +177,16 @@ class QuickChat extends EventEmitter {
     });
     child.on('close', (code) => {
       this.child = null;
+      const errors = decodeOutput(stderr);
       // older or newer CLIs may not stream a new cloud run as JSON: run it again as plain text
-      if (cloud && !plain && !sawOutput && code !== 0 && /stream-json/.test(decodeOutput(stderr))) {
+      if (cloud && !plain && !sawOutput && code !== 0 && /stream-json/.test(errors)) {
         this.send({ prompt, cwd, cloud: true, text: true });
+        return;
+      }
+      // versions that start new cloud sessions only interactively: the caller opens a terminal
+      if (cloud && !resume && code !== 0 && /interactive only|cannot be combined with --print/i.test(errors)) {
+        this.emit('event', { type: 'interactive-only', prompt: String(prompt), cwd: dir });
+        this.emit('event', { type: 'done', sessionId: null, cwd: dir, cloud });
         return;
       }
       if (!sawResult && code !== 0) {

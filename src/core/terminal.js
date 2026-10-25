@@ -53,7 +53,9 @@ async function openInTerminal({ cwd, sessionId, claudePath, template, args }) {
   const dir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
   const claude = claudePath || 'claude';
   const claudeArgs = args || (sessionId ? ['--resume', sessionId] : []);
-  const claudeCommand = [/\s/.test(claude) ? `"${claude}"` : claude, ...claudeArgs].join(' ');
+  // session ids are plain tokens; anything else (a cloud task) is quoted for the shell
+  const quoteArg = (a) => (/^[\w.:/=-]+$/.test(a) ? a : process.platform === 'win32' ? `"${a}"` : shellQuote(a));
+  const claudeCommand = [/\s/.test(claude) ? `"${claude}"` : claude, ...claudeArgs.map(quoteArg)].join(' ');
 
   if (template) {
     const command = template.replaceAll('{cwd}', JSON.stringify(dir)).replaceAll('{command}', claudeCommand);
@@ -91,4 +93,31 @@ async function openInTerminal({ cwd, sessionId, claudePath, template, args }) {
   }
 }
 
-module.exports = { openInTerminal, shellQuote, appleScriptString };
+function powerShellString(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+/**
+ * Start a cloud session for a task in a terminal (`claude --cloud "<task>"`), for Claude Code
+ * versions that only start new cloud sessions interactively. The task is free text, so on
+ * Windows it goes through PowerShell's -EncodedCommand instead of cmd.exe quoting.
+ */
+async function openCloudTask({ cwd, claudePath, task }) {
+  const dir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
+  const claude = claudePath || 'claude';
+  if (process.platform !== 'win32') {
+    return openInTerminal({ cwd: dir, claudePath: claude, args: ['--cloud', String(task)] });
+  }
+  const script = `Set-Location -LiteralPath ${powerShellString(dir)}; & ${powerShellString(claude)} --cloud ${powerShellString(task)}`;
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  return firstAvailable([
+    ['wt.exe', ['-d', dir, 'powershell.exe', '-NoExit', '-EncodedCommand', encoded]],
+    [
+      'cmd.exe',
+      ['/c', 'start', '""', 'powershell.exe', '-NoExit', '-EncodedCommand', encoded],
+      { windowsVerbatimArguments: true },
+    ],
+  ]);
+}
+
+module.exports = { openInTerminal, openCloudTask, shellQuote, appleScriptString, powerShellString };

@@ -554,6 +554,12 @@ function handleQuickEvent(ev) {
     case 'note': // progress of a cloud run
       if (reply) reply.tool = ev.text;
       break;
+    case 'interactive-only': // this Claude Code starts cloud sessions in a terminal only
+      if (reply) {
+        reply.text = t('ui.cloudInTerminal');
+        reply.pending = false;
+      }
+      break;
     case 'cloud':
       chat.cloudId = ev.cloudSessionId;
       if (ev.url) chat.url = ev.url;

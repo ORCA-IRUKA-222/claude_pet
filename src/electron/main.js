@@ -26,7 +26,7 @@ const { listPets, findPet } = require('../core/pets');
 const { QuickChat, CLOUD_ID } = require('../core/quickchat');
 const { recentSessions, findTranscript, readConversation } = require('../core/history');
 const rotation = require('../core/rotation');
-const { openInTerminal } = require('../core/terminal');
+const { openInTerminal, openCloudTask } = require('../core/terminal');
 const installer = require('../core/installer');
 const autostart = require('../core/autostart');
 const { findClaude, isClaudeExecutable } = require('../core/claude-path');
@@ -60,6 +60,11 @@ const quickChat = new QuickChat({
 quickChat.on('event', (ev) => {
   sendToRenderer('quick-event', ev);
   quickChatToApp(ev);
+  if (ev.type === 'interactive-only') {
+    openCloudTask({ cwd: ev.cwd, claudePath: claudeCommand(), task: ev.prompt }).catch((err) =>
+      sendToRenderer('quick-event', { type: 'error', message: err.message }),
+    );
+  }
 });
 
 function persist(changes) {

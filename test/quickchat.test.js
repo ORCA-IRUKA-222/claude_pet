@@ -182,3 +182,32 @@ test(
     assert.equal(events.find((e) => e.type === 'raw').text, 'follow-up to cse_01ABC: 続けて');
   },
 );
+
+test(
+  'a Claude Code that starts cloud sessions only interactively hands the task back',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const file = path.join(tempDir(), 'claude');
+    fs.writeFileSync(
+      file,
+      `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on('end', () => {
+  process.stderr.write('Error: --cloud cannot be combined with --print. Starting a new cloud session with --cloud is interactive only\\n');
+  process.exit(1);
+});
+`,
+    );
+    fs.chmodSync(file, 0o755);
+    const chat = new QuickChat({ claudePath: file });
+    const pending = collect(chat);
+    const dir = tempDir();
+    chat.send({ prompt: 'ピン止めを直して', cwd: dir, cloud: true });
+    const events = await pending;
+    assert.deepEqual(
+      events.find((e) => e.type === 'interactive-only'),
+      { type: 'interactive-only', prompt: 'ピン止めを直して', cwd: dir },
+    );
+    assert.ok(!events.some((e) => e.type === 'error'));
+  },
+);
