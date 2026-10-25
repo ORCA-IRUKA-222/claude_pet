@@ -65,3 +65,19 @@ test('buildId reads the commit from loose and packed refs', () => {
   assert.equal(buildId(root), 'fedcba987654');
   assert.equal(buildId(tempDir()), null);
 });
+
+test('findClaude falls back to the copy bundled with the VS Code extension, newest first', () => {
+  const home = 'C:\\Users\\me';
+  const ext = 'C:\\Users\\me\\.vscode\\extensions';
+  const list = (dir) =>
+    dir === ext
+      ? ['ms-python.python-2025.1.0', 'anthropic.claude-code-2.1.9-win32-x64', 'anthropic.claude-code-2.1.145-win32-x64']
+      : [];
+  const newest = `${ext}\\anthropic.claude-code-2.1.145-win32-x64\\resources\\native-binary\\claude.exe`;
+  const older = `${ext}\\anthropic.claude-code-2.1.9-win32-x64\\resources\\native-binary\\claude.exe`;
+  const env = { Path: 'C:\\Windows', APPDATA: `${home}\\AppData\\Roaming` };
+  assert.equal(findClaude({ platform: 'win32', env, home, list, exists: only(newest, older) }), newest);
+  // the standard install still wins over a bundled copy
+  const installed = `${home}\\.local\\bin\\claude.exe`;
+  assert.equal(findClaude({ platform: 'win32', env, home, list, exists: only(newest, installed) }), installed);
+});

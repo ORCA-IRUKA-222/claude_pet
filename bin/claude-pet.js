@@ -38,6 +38,14 @@ const HELP = `claude-pet — Claude Code のデスクトップペット
                                  コードで描いたペットをスプライトシートに書き出し
 `;
 
+const ENTRYPOINTS = {
+  cli: 'ターミナル（CLI）',
+  'claude-desktop': 'Claude デスクトップアプリ',
+  'claude-vscode': 'VS Code 拡張',
+  remote: 'クラウド',
+  remote_desktop: 'クラウド',
+};
+
 const ICONS = { waiting: '🙋', failed: '⚠️ ', running: '⚙️ ', ready: '✅', idle: '💤' };
 
 function electronBinary() {
@@ -329,7 +337,7 @@ async function slashHook() {
 
 async function doctor() {
   const { findClaude } = require('../src/core/claude-path');
-  const { transcriptFiles } = require('../src/core/history');
+  const { transcriptFiles, readSession } = require('../src/core/history');
   const installer = require('../src/core/installer');
   const autostart = require('../src/core/autostart');
   const config = loadConfig();
@@ -338,6 +346,7 @@ async function doctor() {
   const claude = findClaude({ configured: config.claudePath, learned: config.learnedClaudePath });
   const files = transcriptFiles();
   const recent = files.filter((f) => Date.now() - f.mtimeMs <= 7 * 24 * 3600e3).length;
+  const latest = files.map((f) => readSession(f.file)).find((s) => s && s.entrypoint);
   const lines = [
     [
       'ペット本体',
@@ -356,9 +365,21 @@ async function doctor() {
         : 'ありません',
     ],
     ['記録の場所', path.join(claudeDir(), 'projects')],
+    ...(latest
+      ? [['最近使った Claude Code', `${ENTRYPOINTS[latest.entrypoint] || latest.entrypoint} ${latest.version || ''}`.trim()]]
+      : []),
     ['自動起動', autostart.isEnabled() ? 'オン' : 'オフ'],
   ];
   for (const [label, value] of lines) console.log(`${label}: ${value}`);
+  if (!claude) {
+    const install =
+      process.platform === 'win32'
+        ? 'PowerShell で  irm https://claude.ai/install.ps1 | iex'
+        : 'curl -fsSL https://claude.ai/install.sh | bash';
+    console.log(
+      `\nクイックチャットには claude コマンドが必要です。${install}  でインストールして、一度 claude を起動してログインしてください。`,
+    );
+  }
   if (!files.length) {
     console.log(
       '\nこのPCで Claude Code を使った記録がありません。Claude アプリや Web のクラウドで動く会話は、PC に記録が残らないためペットには出せません。',

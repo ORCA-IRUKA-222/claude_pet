@@ -62,6 +62,8 @@ function readSession(file) {
     prompt: null,
     message: null,
     title: null,
+    entrypoint: null, // what ran it: cli, the desktop app, an editor extension…
+    version: null,
     updatedAt: stat.mtimeMs,
   };
   for (const line of readTail(file).split('\n')) {
@@ -74,6 +76,8 @@ function readSession(file) {
     }
     if (entry.sessionId && entry.sessionId !== session.id) continue;
     if (typeof entry.cwd === 'string') session.cwd = entry.cwd;
+    if (typeof entry.entrypoint === 'string') session.entrypoint = entry.entrypoint;
+    if (typeof entry.version === 'string') session.version = entry.version;
     if (entry.type === 'custom-title' && entry.customTitle) session.title = clip(entry.customTitle, 120);
     if (entry.type === 'last-prompt' && entry.lastPrompt) session.prompt = clip(entry.lastPrompt, 300);
     else if (isHumanPrompt(entry)) session.prompt = clip(textOf(entry.message.content), 300);
