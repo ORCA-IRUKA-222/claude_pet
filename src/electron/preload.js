@@ -16,6 +16,7 @@ const EVENTS = new Set([
   'digest',
   'attach',
   'say',
+  'lines',
 ]);
 
 contextBridge.exposeInMainWorld('pet', {

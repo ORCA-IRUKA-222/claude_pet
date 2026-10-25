@@ -951,6 +951,13 @@ button {
   background: var(--accent);
 }
 
+/* what the pet says can be a whole sentence */
+.bubble.toast .bubble-title,
+.bubble.speaking .bubble-title {
+  white-space: normal;
+  word-break: break-word;
+}
+
 .session-text .md {
   white-space: normal;
 }

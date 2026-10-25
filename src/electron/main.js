@@ -32,6 +32,7 @@ const { recentSessions, findTranscript, readConversation } = require('../core/hi
 const rotation = require('../core/rotation');
 const { openInTerminal, openCloudTask } = require('../core/terminal');
 const { openInEditor } = require('../core/editor');
+const { linesFor } = require('../core/lines');
 const { TimeKeeper } = require('../core/timers');
 const { Modes } = require('../core/modes');
 const { MemoStore } = require('../core/memos');
@@ -162,6 +163,7 @@ function petForRenderer(p, announce = false) {
     rows: p.rows,
     pixelArt: p.pixelArt,
     displayHeight: p.displayHeight || null,
+    lines: linesFor(p), // what it says in each scene (~/.claude-pet/lines)
     states: Object.fromEntries(
       Object.entries(p.states || {}).map(([state, info]) => [
         state,
@@ -1013,6 +1015,12 @@ async function handleControl({ action, value }) {
       return typeof value === 'boolean' ? setAutostart(value) : readAutostart();
     case 'cloud':
       return value && typeof value === 'object' ? updateCloud(value) : cloudStatus();
+    case 'reload-lines': {
+      // after a line pack was added or edited: no restart, no change of pet
+      const lines = linesFor(pet);
+      sendToRenderer('lines', lines);
+      return { pet: pet && pet.displayName, scenes: Object.keys(lines) };
+    }
     case 'quit':
       setTimeout(quit, 50);
       return {};
