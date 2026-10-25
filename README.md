@@ -58,6 +58,38 @@ claude-pet doctor
 
 ペット本体が最新か、`claude` コマンドの場所、フックの登録、このPCにある Claude Code の会話記録の数、自動起動の設定を表示します。
 
+### クラウドの Claude Code（claude.ai/code・Claude アプリ）
+
+クラウドで動く Claude Code はあなたの PC に直接つながらないので、クラウド側のフックが状態を**暗号化**して無料の通知中継サービス [ntfy.sh](https://ntfy.sh) に送り、ペットがそれを受け取ります。中継サーバーには暗号文しか見えません（AES-256-GCM。鍵はあなたの PC とクラウド環境の設定にだけあります）。
+
+```bash
+claude-pet cloud setup
+```
+
+表示される手順どおりに、claude.ai のクラウド環境の設定で
+
+1. 「ネットワークアクセス」の許可ドメインに `ntfy.sh` を追加
+2. 「セットアップスクリプト」に表示された 1 行を追加
+
+すると、それ以降に始めたクラウドセッションがペットの一覧に ☁ 付きで出ます。「ブラウザで開く」でそのセッションを開けます。
+
+```bash
+claude-pet cloud          # 状態（接続中か）
+claude-pet cloud test     # PC 側だけで、中継からペットに届くか確かめる
+claude-pet cloud off      # やめる（on で再開）
+```
+
+セットアップスクリプトはこのリポジトリの今のブランチから `cloud/setup.sh` を読み込みます。ブランチを消したり変えたりしたら、`claude-pet cloud setup` で新しい 1 行を表示して貼り直してください（鍵は同じものが使われます）。
+
+### claude.ai のチャット（ブラウザ）
+
+Chrome / Edge で claude.ai を使うときは、拡張機能で「返答中」「返答完了」をペットに出せます。
+
+1. `chrome://extensions`（Edge は `edge://extensions`）を開き、「デベロッパー モード」をオンにする
+2. 「パッケージ化されていない拡張機能を読み込む」で、このリポジトリの `extension` フォルダを選ぶ
+
+claude.ai のチャットが一覧に 🌐 付きで出ます。拡張機能はページを読むだけで、操作はしません。ペットへはイベントの報告だけができ、設定は変えられません。
+
 ### PC 起動時に自動で起動する
 
 ```bash
@@ -96,7 +128,7 @@ claude-pet autostart on     # やめるときは off、今の設定は autostart
 
 項目を開くと、最後のプロンプトと Claude の返答が読めます。「ターミナルで開く」で `claude --resume <セッション>` を新しいターミナルで開きます。
 
-ペットを起動する前の会話も、Claude Code の会話記録（`~/.claude/projects/`）から直近 7 日分・最大 20 件を読み込んで一覧に出します（10 分ごとに読み直し）。対象は Claude Code の会話だけで、claude.ai や Claude アプリでのチャットは含まれません。
+ペットを起動する前の会話も、Claude Code の会話記録（`~/.claude/projects/`）から直近 7 日分・最大 20 件を読み込んで一覧に出します（10 分ごとに読み直し）。クラウドの Claude Code とブラウザの claude.ai は、下の「クラウドの Claude Code」「claude.ai のチャット（ブラウザ）」の設定をすると一覧に出ます。
 
 ### クイックチャット
 
@@ -252,8 +284,8 @@ claude-pet uninstall    # フックと /pet, /hatch-pet、PC 起動時の自動�
 
 ## 制限
 
-- 対象は Claude Code のセッションです。claude.ai や Claude アプリの通常のチャットにはフックがないため、追跡できません。
-- クラウドで動く Claude Code（Claude Code on the web など）のセッションは、手元のペットに届きません。
+- Claude アプリ（デスクトップ・スマホ）の普通のチャットは追跡できません。外に状態を知らせる仕組みがないためです。ブラウザで claude.ai を使う場合は拡張機能で追跡できます。
+- クラウドの Claude Code は、中継（ntfy）経由なので数秒遅れることがあります。ツールの動きは数分おきにだけ届きます。
 - `Esc` で中断した応答には `Stop` が届きません。その場合、次のプロンプトを送るか、Claude Code の `idle_prompt` 通知が届くまで「作業中」のままです（最長でも `staleMinutes` 後にひと休みに戻ります）。
 - Linux の Wayland ではウィンドウの位置を変えられない場合があります。
 
@@ -271,6 +303,9 @@ npm run build:pet    # tools/designs/mochi.js から pets/mochi とアイコン�
 | `src/core/sessions.js` | フックのイベントからセッションの状態を決める |
 | `src/core/history.js` | 起動前の会話を会話記録から読み込む |
 | `src/core/autostart.js` | PC 起動時の自動起動の登録 |
+| `src/hook/cloud-hook.js`, `cloud/setup.sh` | クラウドセッション用のフック（暗号化して ntfy に送る） |
+| `src/core/relay.js` | ntfy から受け取ってペットに渡す |
+| `extension/` | claude.ai 用のブラウザ拡張 |
 | `src/core/server.js` | ローカルの受け口 |
 | `src/core/quickchat.js` | クイックチャット（`claude -p --output-format stream-json`） |
 | `src/core/installer.js` | `setup` / `uninstall` |

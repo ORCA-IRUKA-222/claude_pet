@@ -20,6 +20,8 @@ const HELP = `claude-pet — Claude Code のデスクトップペット
   claude-pet quit                終了
   claude-pet status              セッションの状態を表示
   claude-pet update              最新版に更新して起動し直す
+  claude-pet cloud setup         クラウドの Claude Code もペットに出す（設定方法を表示）
+  claude-pet cloud [on|off|test] クラウド連携の状態 / 切り替え / 届くかテスト
   claude-pet doctor              うまく動かないときの診断
   claude-pet setup               Claude Code にフックと /pet, /hatch-pet を登録
   claude-pet uninstall           登録を解除
@@ -335,6 +337,96 @@ async function slashHook() {
   process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
 }
 
+/** Where cloud/setup.sh is downloaded from: this checkout's branch on GitHub. */
+function rawBase() {
+  try {
+    const m = /github\.com[/:]([^/]+)\/(.+?)(?:\.git)?\/?$/.exec(git(['remote', 'get-url', 'origin']));
+    let branch = '';
+    try {
+      branch = git(['rev-parse', '--abbrev-ref', '@{upstream}']).replace(/^origin\//, '');
+    } catch {
+      branch = git(['rev-parse', '--abbrev-ref', 'HEAD']);
+    }
+    if (m && branch && branch !== 'HEAD') return `https://raw.githubusercontent.com/${m[1]}/${m[2]}/${branch}`;
+  } catch {
+    // not a git checkout
+  }
+  return 'https://raw.githubusercontent.com/ORCA-IRUKA-222/claude_pet/main';
+}
+
+const CONNECTION = { connected: '接続中', disconnected: '再接続を待っています', stopped: '停止中' };
+
+/** claude-pet cloud setup | on | off | test | (status) */
+async function cloudCommand([action = 'status'] = []) {
+  const { newKey, newTopic, seal } = require('../src/shared/seal');
+  const running = await client.isRunning();
+  const config = loadConfig();
+  let cloud = config.cloud;
+  const apply = async (patch) => {
+    cloud = { ...cloud, ...patch };
+    if (running) await client.control('cloud', patch);
+    else saveConfig({ ...config, cloud });
+  };
+
+  switch (action) {
+    case 'setup': {
+      // keep an existing topic and key so a setup line already in use stays valid
+      await apply(cloud.topic && cloud.key ? { enabled: true } : { enabled: true, topic: newTopic(), key: newKey() });
+      const base = rawBase();
+      const custom = cloud.server !== 'https://ntfy.sh' ? ` ${cloud.server}` : '';
+      return [
+        '☁ クラウドの Claude Code をペットに表示する設定',
+        '',
+        '1. claude.ai の Claude Code（クラウド）で環境の設定を開きます（セッション画面上部の環境名 → 編集）。',
+        `2. 「ネットワークアクセス」の許可ドメインに ${new URL(cloud.server).host} を追加します。`,
+        '3. 「セットアップスクリプト」に次の 1 行を追加します:',
+        '',
+        `curl -fsSL ${base}/cloud/setup.sh | sh -s -- ${base} ${cloud.topic} ${cloud.key}${custom} || true`,
+        '',
+        '4. 新しいクラウドセッションを始めると、ペットの一覧に ☁ 付きで出ます。',
+        '',
+        'この 1 行には暗号化の鍵が入っています。人に見せないでください。',
+        `ペット側の受信だけ先に確かめるには: claude-pet cloud test`,
+      ].join('\n');
+    }
+    case 'on':
+      if (!cloud.topic || !cloud.key) return '☁ まだ設定がありません。claude-pet cloud setup を実行してください';
+      await apply({ enabled: true });
+      return '☁ クラウド連携をオンにしました';
+    case 'off':
+      await apply({ enabled: false });
+      return '☁ クラウド連携をオフにしました（設定は残っています）';
+    case 'test': {
+      if (!cloud.topic || !cloud.key) return '☁ まだ設定がありません。claude-pet cloud setup を実行してください';
+      const { publish } = require('../src/core/relay');
+      const id = `cloud-test-${Date.now()}`;
+      const event = {
+        event: 'Stop',
+        session_id: id,
+        cwd: '/cloud/テスト',
+        ts: Date.now(),
+        source: 'cloud',
+        message: 'クラウド中継のテストです。届いていれば、ペット側の設定は正しく動いています。',
+      };
+      await publish(cloud, seal(event, cloud.key));
+      if (!running) return '☁ 中継サーバーに送りました。ペットを起動すると一覧に出ます';
+      for (let i = 0; i < 20; i++) {
+        const status = await client.status();
+        if (status && status.sessions.some((s) => s.id === id)) return '☁ テストのメッセージがペットに届きました';
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      return '☁ 中継サーバーには送れましたが、ペットに届きませんでした。claude-pet cloud で状態を確認してください';
+    }
+    default: {
+      if (!cloud.topic || !cloud.key) return '☁ クラウド連携: 未設定（claude-pet cloud setup で設定します）';
+      if (!cloud.enabled) return '☁ クラウド連携: オフ（claude-pet cloud on でオンにします）';
+      if (!running) return '☁ クラウド連携: オン（ペットは起動していません）';
+      const { cloud: live } = await client.control('cloud');
+      return `☁ クラウド連携: オン（${CONNECTION[live.connection] || live.connection}）`;
+    }
+  }
+}
+
 async function doctor() {
   const { findClaude } = require('../src/core/claude-path');
   const { transcriptFiles, readSession } = require('../src/core/history');
@@ -369,6 +461,7 @@ async function doctor() {
       ? [['最近使った Claude Code', `${ENTRYPOINTS[latest.entrypoint] || latest.entrypoint} ${latest.version || ''}`.trim()]]
       : []),
     ['自動起動', autostart.isEnabled() ? 'オン' : 'オフ'],
+    ['クラウド連携', config.cloud.topic && config.cloud.enabled ? `オン（${config.cloud.server}）` : 'オフ'],
   ];
   for (const [label, value] of lines) console.log(`${label}: ${value}`);
   if (!claude) {
@@ -382,7 +475,7 @@ async function doctor() {
   }
   if (!files.length) {
     console.log(
-      '\nこのPCで Claude Code を使った記録がありません。Claude アプリや Web のクラウドで動く会話は、PC に記録が残らないためペットには出せません。',
+      '\nこのPCで Claude Code を使った記録がありません。クラウドの Claude Code は claude-pet cloud setup、ブラウザの claude.ai は extension フォルダの拡張機能で表示できます。',
     );
   }
 }
@@ -430,6 +523,10 @@ async function main(argv) {
       break;
     case 'update':
       console.log(await update());
+      break;
+    case 'cloud':
+      // CLI only, not /pet: the setup line holds the key and shouldn't land in a transcript
+      console.log(await cloudCommand(args));
       break;
     case 'status':
       if (!(await client.isRunning())) console.log(translator(loadConfig().language)('cli.notRunning'));

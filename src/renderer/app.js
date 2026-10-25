@@ -48,6 +48,7 @@ const state = {
 };
 
 let t = PetI18n.translator('ja');
+const SOURCE_MARK = { quickchat: '💬 ', cloud: '☁ ', browser: '🌐 ' };
 const AUTH_ERROR = /authenticat|oauth|\/login|api key/i;
 let choosingFolder = false; // the folder dialog takes focus; keep the quick-chat box open
 
@@ -227,12 +228,16 @@ function sessionActions(s) {
     actions.appendChild(b);
   };
   if (s.unread || s.effectiveStatus === 'failed') add(t('ui.markRead'), () => api.markRead(s.id));
-  add(t('ui.openTerminal'), async (b) => {
-    b.disabled = true;
-    const res = await api.openTerminal(s.id, s.cwd);
-    b.disabled = false;
-    if (!res.ok) b.textContent = res.error;
-  });
+  // cloud sessions and browser chats live on claude.ai, not on this computer
+  if (s.url) add(t('ui.openInBrowser'), () => api.openUrl(s.url));
+  else {
+    add(t('ui.openTerminal'), async (b) => {
+      b.disabled = true;
+      const res = await api.openTerminal(s.id, s.cwd);
+      b.disabled = false;
+      if (!res.ok) b.textContent = res.error;
+    });
+  }
   add(t('ui.copy'), (b) => {
     api.copy(s.message || s.detail || '');
     b.textContent = t('ui.copied');
@@ -264,7 +269,7 @@ function renderSessions() {
     row.appendChild(el('span', 'dot'));
     const main = el('div', 'session-main');
     const name = el('div', 'session-name');
-    name.appendChild(el('span', 'name', `${s.source === 'quickchat' ? '💬 ' : ''}${sessionName(s)}`));
+    name.appendChild(el('span', 'name', `${SOURCE_MARK[s.source] || ''}${sessionName(s)}`));
     name.appendChild(el('span', 'session-time', timeAgo(s.updatedAt)));
     main.appendChild(name);
     const detail = detailText(s);

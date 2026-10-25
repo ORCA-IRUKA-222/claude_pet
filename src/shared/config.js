@@ -45,6 +45,12 @@ const DEFAULTS = {
   },
   claudePath: null, // defaults to `claude` on PATH or in the usual install folders
   learnedClaudePath: null, // where Claude Code ran from, as reported by the hook
+  cloud: {
+    enabled: false, // show cloud sessions, relayed through an ntfy topic (claude-pet cloud setup)
+    server: 'https://ntfy.sh',
+    topic: null,
+    key: null,
+  },
   terminalCommand: null, // e.g. "wezterm start --cwd {cwd} -- {command}"
   staleMinutes: 30,
 };

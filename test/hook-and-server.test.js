@@ -131,3 +131,26 @@ test('the hook tells the pet where Claude Code runs from', () => {
     else process.env.CLAUDE_CODE_EXECPATH = saved;
   }
 });
+
+test('the browser extension may report events but not control the pet', async () => {
+  const port = await freePort();
+  const received = [];
+  const controls = [];
+  const server = await startServer({
+    port,
+    onEvent: (e, meta) => received.push({ e, meta }),
+    onControl: async (c) => controls.push(c),
+    getStatus: () => ({}),
+  });
+  const headers = { 'content-type': 'application/json', origin: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop' };
+  try {
+    const body = JSON.stringify({ event: 'Stop', session_id: 'claude-ai-1' });
+    assert.equal(await rawRequest(port, { headers, body }), 204);
+    assert.deepEqual(received[0].meta, { fromExtension: true });
+    assert.equal(await rawRequest(port, { headers, path: '/control', body: JSON.stringify({ action: 'quit' }) }), 403);
+    assert.equal(await rawRequest(port, { headers, method: 'GET', path: '/status' }), 403);
+    assert.equal(controls.length, 0);
+  } finally {
+    server.close();
+  }
+});

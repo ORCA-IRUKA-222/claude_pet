@@ -30,6 +30,7 @@ const { openInTerminal } = require('../core/terminal');
 const installer = require('../core/installer');
 const autostart = require('../core/autostart');
 const { findClaude, isClaudeExecutable } = require('../core/claude-path');
+const { RelayListener } = require('../core/relay');
 const { version } = require('../../package.json');
 const { buildId } = require('../shared/build');
 
@@ -42,6 +43,7 @@ let win = null;
 let tray = null;
 let pet = null;
 let startsAtLogin = false;
+let relay = null; // cloud sessions, see src/core/relay.js
 let anchor = null; // bottom-centre of the pet, in screen coordinates
 let drag = null;
 let saveTimer = null;
@@ -376,6 +378,31 @@ function learnClaudePath(file) {
   persist({ learnedClaudePath: file });
 }
 
+// ---------------------------------------------------------------- cloud sessions
+
+function startRelay() {
+  if (relay) relay.stop();
+  relay = null;
+  const { enabled, server, topic, key } = config.cloud || {};
+  if (!enabled || !topic || !key) return;
+  relay = new RelayListener({ server, topic, key });
+  relay.on('event', (event) => tracker.handle({ ...event, source: 'cloud' }));
+  relay.start();
+}
+
+function cloudStatus() {
+  const { enabled, server, topic } = config.cloud || {};
+  return { cloud: { enabled: Boolean(enabled), server, topic, connection: relay ? relay.status : 'stopped' } };
+}
+
+function updateCloud(patch) {
+  const allowed = ['enabled', 'server', 'topic', 'key'];
+  const changes = Object.fromEntries(Object.entries(patch).filter(([k]) => allowed.includes(k)));
+  persist({ cloud: { ...config.cloud, ...changes } });
+  startRelay();
+  return cloudStatus();
+}
+
 // ---------------------------------------------------------------- start at sign-in
 
 const autostartOptions = () => ({ electron: process.execPath, appRoot: APP_ROOT });
@@ -503,6 +530,8 @@ async function handleControl({ action, value }) {
       return value && typeof value === 'object' ? updateRotation(value) : rotationStatus();
     case 'autostart':
       return typeof value === 'boolean' ? setAutostart(value) : readAutostart();
+    case 'cloud':
+      return value && typeof value === 'object' ? updateCloud(value) : cloudStatus();
     case 'quit':
       setTimeout(quit, 50);
       return {};
@@ -551,6 +580,11 @@ function registerIpc() {
   ipcMain.on('mark-all-read', () => tracker.markAllRead());
   ipcMain.on('dismiss', (_e, id) => tracker.dismiss(String(id)));
   ipcMain.on('copy', (_e, text) => clipboard.writeText(String(text || '')));
+
+  ipcMain.on('open-url', (_e, url) => {
+    // only conversations on claude.ai: cloud sessions and browser chats
+    if (typeof url === 'string' && /^https:\/\/claude\.ai\/[\w/.-]*$/.test(url)) shell.openExternal(url);
+  });
 
   ipcMain.handle('open-terminal', async (_e, { sessionId, cwd }) => {
     try {
@@ -606,9 +640,14 @@ async function boot() {
       port: getPort(),
       version,
       build: buildId(),
-      onEvent: (event) => {
-        learnClaudePath(event && event.claude_path);
-        tracker.handle(event);
+      onEvent: (event, { fromExtension } = {}) => {
+        if (!event || typeof event !== 'object') return;
+        // a browser extension only reports claude.ai chats; it never tells where claude is
+        if (fromExtension) tracker.handle({ ...event, claude_path: undefined, source: 'browser' });
+        else {
+          learnClaudePath(event.claude_path);
+          tracker.handle(event);
+        }
       },
       onControl: handleControl,
       getStatus: () => ({ visible: Boolean(win && win.isVisible()), sessions: tracker.list(), aggregate: tracker.aggregate() }),
@@ -636,6 +675,7 @@ async function boot() {
   };
   loadHistory();
   setInterval(loadHistory, 10 * 60e3).unref();
+  startRelay();
   tracker.on('transition', notifyTransition);
   setInterval(() => tracker.prune(), 60e3).unref();
 

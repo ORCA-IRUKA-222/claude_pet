@@ -40,6 +40,7 @@ function newSession(id, cwd, ts, extra = {}) {
     title: null,
     source: 'cli',
     entrypoint: null,
+    url: null, // cloud and browser sessions open here instead of in a terminal
     status: 'idle',
     activity: null,
     detail: null,
@@ -104,6 +105,7 @@ class SessionTracker extends EventEmitter {
       s.project = path.basename(e.cwd);
     }
     if (e.title) s.title = e.title;
+    if (typeof e.url === 'string' && /^https:\/\/claude\.ai\//.test(e.url)) s.url = e.url;
     if (e.permission_mode) s.permissionMode = e.permission_mode;
 
     const before = { status: s.status, unread: s.unread };
