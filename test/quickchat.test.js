@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { QuickChat, buildArgs, buildCloudArgs, parseLine, decodeOutput } = require('../src/core/quickchat');
+const { QuickChat, buildArgs, buildCloudArgs, modelArgs, parseLine, decodeOutput } = require('../src/core/quickchat');
 const { tempDir } = require('./helpers');
 
 test('buildArgs validates everything that reaches the command line', () => {
@@ -211,3 +211,50 @@ process.stdin.on('end', () => {
     assert.ok(!events.some((e) => e.type === 'error'));
   },
 );
+
+test('model and effort go on every run; unknown values are refused', () => {
+  assert.deepEqual(modelArgs({ model: 'claude-opus-5-5', effort: 'xhigh' }), ['--model', 'claude-opus-5-5', '--effort', 'xhigh']);
+  assert.deepEqual(buildArgs({ model: 'opus', effort: 'max' }).slice(-4), ['--model', 'opus', '--effort', 'max']);
+  assert.deepEqual(buildCloudArgs({ text: true, model: 'opus', effort: 'high' }), [
+    '-p',
+    '--cloud',
+    '--model',
+    'opus',
+    '--effort',
+    'high',
+  ]);
+  assert.throws(() => modelArgs({ effort: 'turbo' }), /invalid effort/);
+  assert.throws(() => modelArgs({ model: 'opus; rm -rf' }), /invalid model/);
+});
+
+test('a Claude Code without --effort is asked again without it', { skip: process.platform === 'win32' }, async () => {
+  const file = path.join(tempDir(), 'claude');
+  fs.writeFileSync(
+    file,
+    `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on('end', () => {
+  if (process.argv.includes('--effort')) {
+    process.stderr.write("error: unknown option '--effort'\\n");
+    process.exit(1);
+  }
+  const model = process.argv[process.argv.indexOf('--model') + 1];
+  process.stdout.write(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'model=' + model }] } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'result', result: 'ok', is_error: false }) + '\\n');
+});
+`,
+  );
+  fs.chmodSync(file, 0o755);
+  const chat = new QuickChat({ claudePath: file, model: 'claude-opus-5-5', effort: 'xhigh' });
+  const events = await new Promise((resolve) => {
+    const all = [];
+    chat.on('event', (ev) => {
+      all.push(ev);
+      if (ev.type === 'done') resolve(all);
+    });
+    chat.send({ prompt: 'hi', cwd: tempDir() });
+  });
+  assert.equal(events.find((e) => e.type === 'text').text, 'model=claude-opus-5-5');
+  assert.ok(!events.some((e) => e.type === 'error'));
+  assert.equal(chat.noEffort, true);
+});

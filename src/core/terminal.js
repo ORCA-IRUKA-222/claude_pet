@@ -102,13 +102,14 @@ function powerShellString(value) {
  * versions that only start new cloud sessions interactively. The task is free text, so on
  * Windows it goes through PowerShell's -EncodedCommand instead of cmd.exe quoting.
  */
-async function openCloudTask({ cwd, claudePath, task }) {
+async function openCloudTask({ cwd, claudePath, task, extraArgs = [] }) {
   const dir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
   const claude = claudePath || 'claude';
   if (process.platform !== 'win32') {
-    return openInTerminal({ cwd: dir, claudePath: claude, args: ['--cloud', String(task)] });
+    return openInTerminal({ cwd: dir, claudePath: claude, args: ['--cloud', String(task), ...extraArgs] });
   }
-  const script = `Set-Location -LiteralPath ${powerShellString(dir)}; & ${powerShellString(claude)} --cloud ${powerShellString(task)}`;
+  const rest = extraArgs.map(powerShellString).join(' ');
+  const script = `Set-Location -LiteralPath ${powerShellString(dir)}; & ${powerShellString(claude)} --cloud ${powerShellString(task)} ${rest}`;
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
   return firstAvailable([
     ['wt.exe', ['-d', dir, 'powershell.exe', '-NoExit', '-EncodedCommand', encoded]],

@@ -323,7 +323,7 @@ function renderChat() {
     if (m.pending && m.tool) bubble.appendChild(el('span', 'tool', `${state.chat.target === 'cloud' ? '☁' : '🔧'} ${m.tool}`));
     log.appendChild(bubble);
   }
-  if (!state.chat.messages.length) log.appendChild(el('p', 'empty', t(`ui.placeholder.${state.chat.target}`)));
+  if (!state.chat.messages.length) log.appendChild(el('p', 'empty', placeholder(state.chat.target)));
   log.scrollTop = log.scrollHeight;
   ui.chatStop.hidden = !state.chat.busy;
   $('chat-terminal').disabled = state.chat.busy;
@@ -343,6 +343,12 @@ function renderPanel() {
   else renderChat();
 }
 
+/** What the input says, including which model answers. */
+function placeholder(target) {
+  const { quickChatModel: model = '', quickChatEffort: effort = 'xhigh' } = state.config;
+  return t(`ui.placeholder.${target}`, { model, effort: t(`effort.${effort}`) });
+}
+
 function renderComposer() {
   ui.composer.hidden = !state.composerOpen;
   if (!state.composerOpen) return;
@@ -353,7 +359,7 @@ function renderComposer() {
   ui.composerCwd.hidden = target === 'chat'; // a normal chat has no folder
   ui.composerTarget.value = target;
   ui.composerTarget.hidden = state.cloning;
-  ui.composerInput.placeholder = state.cloning ? t('ui.clonePlaceholder') : t(`ui.placeholder.${target}`);
+  ui.composerInput.placeholder = state.cloning ? t('ui.clonePlaceholder') : placeholder(target);
   ui.composerSend.disabled = state.chat.busy;
 }
 

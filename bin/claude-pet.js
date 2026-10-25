@@ -446,7 +446,7 @@ function claudeVersion(claude) {
 }
 
 async function doctor() {
-  const { findClaude } = require('../src/core/claude-path');
+  const { findClaude, allClaudes } = require('../src/core/claude-path');
   const { transcriptFiles, readSession } = require('../src/core/history');
   const installer = require('../src/core/installer');
   const autostart = require('../src/core/autostart');
@@ -470,6 +470,10 @@ async function doctor() {
       'Claude Code',
       claude ? `${claude}${claudeVersion(claude)}` : '見つかりません（クイックチャットと「ターミナル」が使えません）',
     ],
+    ...allClaudes({ learned: config.learnedClaudePath })
+      .filter((c) => c.path !== claude)
+      .map((c) => ['  ほかの Claude Code', `${c.path}${c.version ? `（${c.version}）` : ''}`]),
+    ['クイックチャット', `${config.quickChat.model || 'claude-opus-5-5'}・エフォート ${config.quickChat.effort || 'xhigh'}`],
     ['フック', installer.isInstalled() ? '登録済み' : '未登録（claude-pet setup を実行してください）'],
     [
       '会話記録',

@@ -23,7 +23,7 @@ const { translator, formatMinutes } = require('../shared/i18n');
 const { SessionTracker } = require('../core/sessions');
 const { startServer } = require('../core/server');
 const { listPets, findPet } = require('../core/pets');
-const { QuickChat, CLOUD_ID } = require('../core/quickchat');
+const { QuickChat, CLOUD_ID, modelArgs } = require('../core/quickchat');
 const { recentSessions, findTranscript, readConversation } = require('../core/history');
 const rotation = require('../core/rotation');
 const { openInTerminal, openCloudTask } = require('../core/terminal');
@@ -51,17 +51,38 @@ let saveTimer = null;
 let quitting = false;
 
 const tracker = new SessionTracker({ staleMs: config.staleMinutes * 60e3 });
+// The pet asks the strongest model by default; weaker ones only if chosen in the menu.
+const MODELS = [
+  ['claude-opus-5-5', 'Opus 5.5'],
+  ['claude-fable-5-1', 'Fable 5.1'],
+  ['claude-sonnet-5-5', 'Sonnet 5.5'],
+];
+const EFFORT_LEVELS = ['medium', 'high', 'xhigh', 'max'];
+const currentModel = () => config.quickChat.model || MODELS[0][0];
+const currentEffort = () => config.quickChat.effort || 'xhigh';
+
 const claudeCommand = () => findClaude({ configured: config.claudePath, learned: config.learnedClaudePath });
 const quickChat = new QuickChat({
   claudePath: claudeCommand,
   permissionMode: config.quickChat.permissionMode,
-  model: config.quickChat.model,
+  model: currentModel(),
+  effort: currentEffort(),
 });
+
+/** --model / --effort for a Claude Code the pet starts in a terminal. */
+const terminalModelArgs = () => modelArgs({ model: currentModel(), effort: quickChat.noEffort ? null : currentEffort() });
+
+function setModel(changes) {
+  persist({ quickChat: { ...config.quickChat, ...changes } });
+  quickChat.model = currentModel();
+  quickChat.effort = currentEffort();
+  sendToRenderer('config', rendererConfig());
+}
 quickChat.on('event', (ev) => {
   sendToRenderer('quick-event', ev);
   quickChatToApp(ev);
   if (ev.type === 'interactive-only') {
-    openCloudTask({ cwd: ev.cwd, claudePath: claudeCommand(), task: ev.prompt }).catch((err) =>
+    openCloudTask({ cwd: ev.cwd, claudePath: claudeCommand(), task: ev.prompt, extraArgs: terminalModelArgs() }).catch((err) =>
       sendToRenderer('quick-event', { type: 'error', message: err.message }),
     );
   }
@@ -109,6 +130,8 @@ function rendererConfig() {
     language: config.language,
     quickChatCwd: config.quickChat.cwd || app.getPath('home'),
     quickChatTarget: config.quickChat.target || 'local',
+    quickChatModel: (MODELS.find(([id]) => id === currentModel()) || [null, currentModel()])[1],
+    quickChatEffort: currentEffort(),
     home: app.getPath('home'),
   };
 }
@@ -351,6 +374,24 @@ function buildMenu() {
         persist({ alwaysOnTop: item.checked });
         if (win) win.setAlwaysOnTop(item.checked, 'floating');
       },
+    },
+    {
+      label: t('menu.model'),
+      submenu: [
+        ...MODELS.map(([id, label]) => ({
+          label,
+          type: 'radio',
+          checked: currentModel() === id,
+          click: () => setModel({ model: id }),
+        })),
+        { type: 'separator' },
+        ...EFFORT_LEVELS.map((level) => ({
+          label: t('menu.effort', { level: t(`effort.${level}`) }),
+          type: 'radio',
+          checked: currentEffort() === level,
+          click: () => setModel({ effort: level }),
+        })),
+      ],
     },
     {
       label: t('menu.quickChatToApp'),
@@ -639,7 +680,9 @@ function registerIpc() {
   ipcMain.handle('open-terminal', async (_e, { sessionId, cwd, cloudId }) => {
     try {
       // a cloud task attaches to its cloud session interactively
-      const args = CLOUD_ID.test(String(cloudId || '')) ? ['--cloud', cloudId] : undefined;
+      const args = CLOUD_ID.test(String(cloudId || ''))
+        ? ['--cloud', cloudId]
+        : [...(sessionId ? ['--resume', sessionId] : []), ...terminalModelArgs()];
       await openInTerminal({ sessionId, cwd, claudePath: claudeCommand(), template: config.terminalCommand, args });
       return { ok: true };
     } catch (err) {

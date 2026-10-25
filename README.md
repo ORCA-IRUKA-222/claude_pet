@@ -142,9 +142,11 @@ claude-pet autostart on     # やめるときは off、今の設定は autostart
 | クラウドで | クラウドの Claude Code（`claude -p --cloud`）。📁 のフォルダの GitHub リポジトリで作業し、Claude アプリや claude.ai/code にも出ます。「アプリ」でそのセッションを開けます（試験的） |
 | チャット | Claude アプリの普通のチャットを新しく開いて質問します（`claude://claude.ai/new?q=…`）。返事はアプリで見ます |
 
+モデルとエフォートは、ふだんは **Opus 5.5・超高** です（入力欄に表示されます）。右クリックメニューの「モデルとエフォート」で、Fable 5.1 / Sonnet 5.5 や、エフォート（中・高・超高・最大）に変えられます。「PC で」「クラウドで」と、ペットから開くターミナルのすべてに使われます。
+
 📁 を押すと、最近使ったフォルダ、「フォルダを選ぶ…」、「GitHub のリポジトリを使う…」が出ます。リポジトリを `owner/repo` か URL で入力すると、`~/claude-repos/<owner>/<repo>` に取得してそこで作業します（初回だけ。プライベートリポジトリは Git のログイン画面が出ます）。続けて送ると同じ会話の続きになります。
 
-`claude` コマンドは PATH のほか、よくあるインストール先（Windows は `%USERPROFILE%\.local\bin` や `%APPDATA%\npm`）からも探します。Claude Code を一度使うと、フックが Claude Code の場所をペットに伝えるので、PC 起動時に自動で起動した場合でも見つかります。どうしても見つからないときは、設定の `claudePath` に場所を書いてください。
+`claude` コマンドは PATH のほか、よくあるインストール先（Windows は `%USERPROFILE%\.local\bin` や `%APPDATA%\npm`）や、VS Code・Claude デスクトップアプリに同梱されたものからも探し、見つかった中で**いちばん新しい版**を使います（`claude-pet doctor` で一覧と版を確認できます）。Claude Code を一度使うと、フックが Claude Code の場所をペットに伝えるので、PC 起動時に自動で起動した場合でも見つかります。どうしても見つからないときは、設定の `claudePath` に場所を書いてください。
 
 「新しいチャット」を押しても前のチャットは消えません。セッション一覧（💬 付き）で開いて「ここで続ける」を押すと、その続きから話せます。クイックチャット以外の Claude Code の会話も同じように続けられます。
 
@@ -264,7 +266,8 @@ Codex 形式のペット（`pet.json` + `spritesheet.webp|png`、192x208 のセ�
 | `language` | `"ja"` | `"ja"` または `"en"` |
 | `shortcuts.toggle` / `shortcuts.quickChat` | `CommandOrControl+Alt+P` / `+C` | グローバルショートカット（空文字で無効） |
 | `quickChat.permissionMode` | `"default"` | クイックチャットの権限モード（`plan`, `acceptEdits` など） |
-| `quickChat.model` | `null` | クイックチャットで使うモデル |
+| `quickChat.model` | `"claude-opus-5-5"` | クイックチャットで使うモデル |
+| `quickChat.effort` | `"xhigh"` | エフォート（`low` / `medium` / `high` / `xhigh` / `max`） |
 | `claudePath` | `null` | `claude` コマンドの場所（PATH にない場合） |
 | `terminalCommand` | `null` | 「ターミナルで開く」のコマンド。例: `"wezterm start --cwd {cwd} -- {command}"` |
 | `rotation.enabled` / `rotation.intervalMinutes` | `false` / `60` | ペットの自動交代と、その間隔（分） |

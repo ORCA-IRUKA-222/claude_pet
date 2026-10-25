@@ -15,19 +15,35 @@ const { cleanEnv } = require('../shared/env');
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9-]{7,}$/;
 const PERMISSION_MODES = new Set(['default', 'plan', 'acceptEdits', 'auto', 'dontAsk', 'bypassPermissions']);
 const MODEL = /^[\w.:[\]-]+$/;
+const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+
+/** --model / --effort, checked: they end up on a command line. */
+function modelArgs({ model, effort }) {
+  const args = [];
+  if (model) {
+    if (!MODEL.test(model)) throw new Error('invalid model');
+    args.push('--model', model);
+  }
+  if (effort) {
+    if (!EFFORTS.has(effort)) throw new Error('invalid effort');
+    args.push('--effort', effort);
+  }
+  return args;
+}
 const CLOUD_ID = /^(cse|session)_[A-Za-z0-9]+$/;
 const CLOUD_NOTE = /Cloud session: (\S+) \((https:\/\/claude\.ai\/code\/[^\s)]+)\)/;
 
 /** Arguments for a cloud task: a new session, or a follow-up to one (plain text only). */
-function buildCloudArgs({ resume, text }) {
+function buildCloudArgs({ resume, text, model, effort }) {
   if (resume) {
     if (!CLOUD_ID.test(resume)) throw new Error('invalid cloud session id');
     return ['-p', '--cloud', resume];
   }
-  return text ? ['-p', '--cloud'] : ['-p', '--cloud', '--output-format', 'stream-json', '--verbose'];
+  const base = text ? ['-p', '--cloud'] : ['-p', '--cloud', '--output-format', 'stream-json', '--verbose'];
+  return [...base, ...modelArgs({ model, effort })];
 }
 
-function buildArgs({ resume, permissionMode, model }) {
+function buildArgs({ resume, permissionMode, model, effort }) {
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
   if (resume) {
     if (!SESSION_ID.test(resume)) throw new Error('invalid session id');
@@ -37,11 +53,7 @@ function buildArgs({ resume, permissionMode, model }) {
     if (!PERMISSION_MODES.has(permissionMode)) throw new Error('invalid permission mode');
     args.push('--permission-mode', permissionMode);
   }
-  if (model) {
-    if (!MODEL.test(model)) throw new Error('invalid model');
-    args.push('--model', model);
-  }
-  return args;
+  return [...args, ...modelArgs({ model, effort })];
 }
 
 /** Error output as text; cmd.exe on Japanese Windows writes Shift_JIS, not UTF-8. */
@@ -78,11 +90,13 @@ function parseLine(line) {
 
 class QuickChat extends EventEmitter {
   /** @param {object} opts  `claudePath` may be a function, asked again before every message. */
-  constructor({ claudePath = null, permissionMode = 'default', model = null } = {}) {
+  constructor({ claudePath = null, permissionMode = 'default', model = null, effort = null } = {}) {
     super();
     this.claudePath = claudePath || 'claude';
     this.permissionMode = permissionMode;
     this.model = model;
+    this.effort = effort;
+    this.noEffort = false; // set when this Claude Code turns out not to know --effort
     this.child = null;
   }
 
@@ -94,9 +108,10 @@ class QuickChat extends EventEmitter {
     if (this.child) throw new Error('busy');
     if (!prompt || !String(prompt).trim()) throw new Error('empty prompt');
     const dir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
+    const effort = this.noEffort ? null : this.effort;
     const args = cloud
-      ? buildCloudArgs({ resume, text })
-      : buildArgs({ resume, permissionMode: this.permissionMode, model: this.model });
+      ? buildCloudArgs({ resume, text, model: this.model, effort })
+      : buildArgs({ resume, permissionMode: this.permissionMode, model: this.model, effort });
     const plain = cloud && (text || Boolean(resume)); // output is the reply as plain text
     const claude = typeof this.claudePath === 'function' ? this.claudePath() : this.claudePath;
     if (!claude) throw Object.assign(new Error('claude not found'), { code: 'CLAUDE_NOT_FOUND' });
@@ -178,6 +193,12 @@ class QuickChat extends EventEmitter {
     child.on('close', (code) => {
       this.child = null;
       const errors = decodeOutput(stderr);
+      // an older Claude Code without --effort: ask again without it
+      if (effort && !sawOutput && code !== 0 && /unknown option.{0,4}--effort/i.test(errors)) {
+        this.noEffort = true;
+        this.send({ prompt, cwd, resume, cloud, text });
+        return;
+      }
       // older or newer CLIs may not stream a new cloud run as JSON: run it again as plain text
       if (cloud && !plain && !sawOutput && code !== 0 && /stream-json/.test(errors)) {
         this.send({ prompt, cwd, cloud: true, text: true });
@@ -206,4 +227,4 @@ class QuickChat extends EventEmitter {
   }
 }
 
-module.exports = { QuickChat, buildArgs, buildCloudArgs, parseLine, decodeOutput, SESSION_ID, CLOUD_ID };
+module.exports = { QuickChat, buildArgs, buildCloudArgs, modelArgs, parseLine, decodeOutput, SESSION_ID, CLOUD_ID, EFFORTS };

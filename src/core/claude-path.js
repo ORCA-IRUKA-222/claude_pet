@@ -5,6 +5,7 @@
 // runs from (CLAUDE_CODE_EXECPATH), and the usual install folders and the copies bundled
 // with the editor extensions and the desktop app are checked.
 
+const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -72,24 +73,80 @@ function candidates({ platform, env, home, list }) {
   return [...dirs.flatMap((dir) => names.map((name) => p.join(dir, name))), ...bundled({ platform, env, home, list })];
 }
 
-/**
- * The claude command to run, or null when none was found.
- * @param {object} opts
- * @param {string} [opts.configured] `claudePath` from the config, used as is
- * @param {string} [opts.learned]    path a hook reported earlier
- */
-function findClaude({
-  configured,
+const versions = new Map(); // path → { mtimeMs, version }
+
+/** "2.1.310" for a claude executable, or null; cached until the file changes. */
+function claudeVersion(file) {
+  let mtimeMs = 0;
+  try {
+    mtimeMs = fs.statSync(file).mtimeMs;
+  } catch {
+    return null;
+  }
+  const cached = versions.get(file);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.version;
+  let version = null;
+  try {
+    const cmd = process.platform === 'win32' && !/\.exe$/i.test(file);
+    const out = execFileSync(cmd ? `"${file}"` : file, ['--version'], {
+      encoding: 'utf8',
+      timeout: 10000,
+      windowsHide: true,
+      shell: cmd,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    version = (/\d+\.\d+\.\d+/.exec(out) || [])[0] || null;
+  } catch {
+    // not runnable
+  }
+  versions.set(file, { mtimeMs, version });
+  return version;
+}
+
+function compareVersions(a, b) {
+  const pa = String(a || '0')
+    .split('.')
+    .map(Number);
+  const pb = String(b || '0')
+    .split('.')
+    .map(Number);
+  for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+  return 0;
+}
+
+/** Every claude found, with its version, in search order. */
+function allClaudes({
   learned,
   platform = process.platform,
   env = process.env,
   home = os.homedir(),
   exists = isFile,
   list = listDir,
+  versionOf = claudeVersion,
 } = {}) {
+  const seen = new Set();
+  const out = [];
+  for (const file of [learned, ...candidates({ platform, env, home, list })]) {
+    if (!file || seen.has(file.toLowerCase()) || !exists(file)) continue;
+    seen.add(file.toLowerCase());
+    out.push({ path: file, version: versionOf(file) });
+  }
+  return out;
+}
+
+/**
+ * The claude command to run, or null when none was found. Several copies are common (the
+ * terminal install, the ones inside VS Code and the desktop app), and older ones lack
+ * features the pet uses, so the newest version wins.
+ * @param {object} opts
+ * @param {string} [opts.configured] `claudePath` from the config, used as is
+ * @param {string} [opts.learned]    path a hook reported earlier
+ */
+function findClaude({ configured, ...opts } = {}) {
   if (configured) return configured;
-  if (learned && exists(learned)) return learned;
-  return candidates({ platform, env, home, list }).find(exists) || null;
+  const found = allClaudes(opts);
+  if (!found.length) return null;
+  return found.reduce((best, c) => (compareVersions(c.version, best.version) > 0 ? c : best)).path;
 }
 
 /** Whether a path reported by a hook looks like Claude Code's own executable. */
@@ -97,4 +154,4 @@ function isClaudeExecutable(file) {
   return typeof file === 'string' && path.isAbsolute(file) && EXECUTABLE.test(path.basename(file)) && isFile(file);
 }
 
-module.exports = { findClaude, isClaudeExecutable, candidates };
+module.exports = { findClaude, allClaudes, claudeVersion, compareVersions, isClaudeExecutable, candidates };

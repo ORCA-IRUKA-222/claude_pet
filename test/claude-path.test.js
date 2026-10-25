@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { tempDir } = require('./helpers');
-const { findClaude, isClaudeExecutable } = require('../src/core/claude-path');
+const { findClaude, isClaudeExecutable, compareVersions } = require('../src/core/claude-path');
 const { buildId } = require('../src/shared/build');
 
 const only =
@@ -80,4 +80,17 @@ test('findClaude falls back to the copy bundled with the VS Code extension, newe
   // the standard install still wins over a bundled copy
   const installed = `${home}\\.local\\bin\\claude.exe`;
   assert.equal(findClaude({ platform: 'win32', env, home, list, exists: only(newest, installed) }), installed);
+});
+
+test('of several copies, the newest Claude Code is used', () => {
+  const home = 'C:\\Users\\me';
+  const learned =
+    'C:\\Users\\me\\.vscode\\extensions\\anthropic.claude-code-2.1.27-win32-x64\\resources\\native-binary\\claude.exe';
+  const installed = 'C:\\Users\\me\\.local\\bin\\claude.exe';
+  const versions = { [learned]: '2.1.27', [installed]: '2.1.310' };
+  const env = { Path: 'C:\\Windows', APPDATA: `${home}\\AppData\\Roaming` };
+  const opts = { platform: 'win32', env, home, list: () => [], exists: only(learned, installed), versionOf: (f) => versions[f] };
+  assert.equal(findClaude({ learned, ...opts }), installed);
+  assert.ok(compareVersions('2.1.310', '2.1.27') > 0);
+  assert.ok(compareVersions('2.10.0', '2.9.9') > 0);
 });
