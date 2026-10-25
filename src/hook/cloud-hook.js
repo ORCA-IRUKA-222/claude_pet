@@ -7,13 +7,14 @@
 //
 //   node cloud-hook.js --install   register it (the cloud environment's setup script does this)
 
-const { spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const os = require('os');
 const path = require('path');
+const zlib = require('zlib');
 const { compact } = require('./pet-hook');
 const { seal } = require('../shared/seal');
 
@@ -29,7 +30,12 @@ const EVENTS = [
   'SessionEnd',
 ];
 const TOOL_EVENT_EVERY_MS = 3 * 60e3; // keeps a long turn from looking stale on the pet
-const MAX_BODY = 2800; // ntfy keeps messages up to 4 KB as text; base64 adds a third
+// ntfy keeps messages up to 4 KB as text, so a longer event is compressed and sent in parts
+// of this many bytes (sealed and base64-encoded, each part stays under the limit)
+const PART_BYTES = 1900;
+const SINGLE_MAX = 3900;
+const LIMITS = { prompt: 8000, message: 30000 }; // full texts, not the local hook's previews
+const UPDATE_EVERY_MS = 6 * 3600e3;
 const HOOK_TIMEOUT_S = 10;
 
 function stateDir() {
@@ -52,13 +58,50 @@ function cloudEvent(input, env = process.env) {
   delete event.term;
   const remote = env.CLAUDE_CODE_REMOTE_SESSION_ID;
   if (remote && /^cse_[A-Za-z0-9]+$/.test(remote)) event.url = `https://claude.ai/code/${remote.replace(/^cse_/, 'session_')}`;
-  // shorten the longest texts until the sealed message fits
-  for (const key of ['message', 'error_details', 'prompt', 'title']) {
-    while (typeof event[key] === 'string' && Buffer.byteLength(JSON.stringify(event)) > MAX_BODY) {
-      event[key] = event[key].length > 40 ? event[key].slice(0, Math.floor(event[key].length / 2)) + '…' : undefined;
-    }
+  const full = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+  if (event.event === 'UserPromptSubmit' && typeof input.prompt === 'string')
+    event.prompt = full(input.prompt.trim(), LIMITS.prompt);
+  if (/^Stop/.test(event.event) && typeof input.last_assistant_message === 'string') {
+    event.message = full(input.last_assistant_message.trim(), LIMITS.message);
   }
   return event;
+}
+
+/** The sealed message(s) for an event: one when it fits, otherwise compressed parts. */
+function sealEvent(event, key) {
+  const single = seal(event, key);
+  if (single.length <= SINGLE_MAX) return [single];
+  const packed = zlib.deflateRawSync(Buffer.from(JSON.stringify(event)));
+  const id = crypto.randomBytes(6).toString('base64url');
+  const n = Math.ceil(packed.length / PART_BYTES);
+  return Array.from({ length: n }, (_, i) =>
+    seal({ part: { id, i, n }, z: packed.subarray(i * PART_BYTES, (i + 1) * PART_BYTES).toString('base64') }, key),
+  );
+}
+
+/**
+ * Keep the hook files current: at a session start, at most every few hours, download them
+ * again in the background from where the setup script got them (the cloud environment
+ * caches what the setup script installed).
+ */
+function updateLater(config, now = Date.now()) {
+  if (!config.base || !/^https:\/\//.test(config.base)) return;
+  const mark = path.join(stateDir(), 'updated');
+  try {
+    if (now - fs.statSync(mark).mtimeMs < UPDATE_EVERY_MS) return;
+  } catch {
+    // never checked
+  }
+  fs.writeFileSync(mark, '');
+  const script = [
+    'set -e',
+    'T="$(mktemp -d)"',
+    'for f in src/hook/cloud-hook.js src/hook/pet-hook.js src/shared/config.js src/shared/seal.js; do',
+    '  mkdir -p "$T/$(dirname "$f")"; curl -fsSL -m 20 "$2/$f" -o "$T/$f"',
+    'done',
+    'cp -R "$T/src/." "$1/src/"; rm -rf "$T"',
+  ].join('\n');
+  spawn('sh', ['-c', script, 'sh', stateDir(), config.base], { detached: true, stdio: 'ignore' }).unref();
 }
 
 /**
@@ -99,13 +142,15 @@ function shouldSend(raw, event, now = Date.now()) {
  */
 function publish(target, body) {
   const url = `${target.server.replace(/\/+$/, '')}/${target.topic}`;
-  const curl = spawnSync('curl', ['-fsS', '-m', '5', '-H', 'Content-Type: text/plain', '--data-binary', '@-', url], {
-    input: body,
-    stdio: ['pipe', 'ignore', 'ignore'],
-    timeout: 7000,
+  return new Promise((resolve) => {
+    const curl = spawn('curl', ['-fsS', '-m', '5', '-H', 'Content-Type: text/plain', '--data-binary', '@-', url], {
+      stdio: ['pipe', 'ignore', 'ignore'],
+    });
+    curl.on('error', () => resolve(publishWithNode(target, body)));
+    curl.on('close', (code) => resolve(code === 0 ? true : publishWithNode(target, body)));
+    curl.stdin.on('error', () => {});
+    curl.stdin.end(body);
   });
-  if (!curl.error && curl.status === 0) return Promise.resolve(true);
-  return publishWithNode(target, body);
 }
 
 function publishWithNode({ server, topic }, body) {
@@ -125,11 +170,10 @@ function publishWithNode({ server, topic }, body) {
   });
 }
 
-function hookHandler(event, script) {
-  const handler = { type: 'command', command: process.execPath, args: [script], timeout: HOOK_TIMEOUT_S };
-  // tool events don't need to hold Claude up
-  if (event === 'PreToolUse') handler.async = true;
-  return handler;
+function hookHandler(script) {
+  // a cloud session's process lives on, so the hook can run in the background and never hold
+  // Claude up (sending a long reply in parts takes a moment)
+  return { type: 'command', command: process.execPath, args: [script], timeout: HOOK_TIMEOUT_S, async: true };
 }
 
 const isOurs = (h) => h && Array.isArray(h.args) && h.args.some((a) => String(a).endsWith('cloud-hook.js'));
@@ -140,7 +184,7 @@ function addHooks(settings, script) {
     const groups = (hooks[event] || [])
       .map((g) => ({ ...g, hooks: (g.hooks || []).filter((h) => !isOurs(h)) }))
       .filter((g) => g.hooks.length);
-    hooks[event] = [...groups, { hooks: [hookHandler(event, script)] }];
+    hooks[event] = [...groups, { hooks: [hookHandler(script)] }];
   }
   return { ...settings, hooks };
 }
@@ -192,7 +236,9 @@ function main() {
       const input = JSON.parse(raw.toString('utf8'));
       if (!config || !input || !input.hook_event_name || !input.session_id) process.exit(0);
       const event = cloudEvent(input);
-      if (shouldSend(raw, event)) await publish(config, seal(event, config.key));
+      if (event.event === 'SessionStart') updateLater(config);
+      // parts go out together; the pet puts them back in order
+      if (shouldSend(raw, event)) await Promise.all(sealEvent(event, config.key).map((body) => publish(config, body)));
     } catch {
       // never disturb the session
     }
@@ -206,4 +252,4 @@ if (require.main === module) {
   } else main();
 }
 
-module.exports = { cloudEvent, addHooks, install, shouldSend, publish, EVENTS, MAX_BODY };
+module.exports = { cloudEvent, sealEvent, addHooks, install, shouldSend, publish, updateLater, EVENTS, SINGLE_MAX };

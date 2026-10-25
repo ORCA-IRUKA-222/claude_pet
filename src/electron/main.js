@@ -523,7 +523,10 @@ function startRelay() {
   for (const s of stored.sessions) if (Array.isArray(s.messages) && !cloudLogs.has(s.id)) cloudLogs.set(s.id, s.messages);
   relay = new RelayListener({ server, topic, key, lastId: stored.lastId });
   relay.on('event', (event) => {
-    tracker.handle({ ...event, source: 'cloud' });
+    // the list shows a preview; the whole text is kept for the conversation view
+    const preview =
+      typeof event.message === 'string' && event.message.length > 4000 ? `${event.message.slice(0, 3999)}…` : event.message;
+    tracker.handle({ ...event, message: preview, source: 'cloud' });
     appendCloudLog(event);
     linkCloudTask(event);
     saveCloudSoon();

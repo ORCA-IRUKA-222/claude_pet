@@ -8,7 +8,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { tempDir } = require('./helpers');
 const { seal, unseal, newKey, newTopic, TOPIC } = require('../src/shared/seal');
-const { cloudEvent, addHooks, install, shouldSend, MAX_BODY } = require('../src/hook/cloud-hook');
+const { cloudEvent, sealEvent, addHooks, install, shouldSend } = require('../src/hook/cloud-hook');
 const { RelayListener, publish } = require('../src/core/relay');
 
 const HOOK = path.join(__dirname, '..', 'src', 'hook', 'cloud-hook.js');
@@ -71,17 +71,33 @@ test('sealed events open only with the same key', () => {
   assert.match(newTopic(), TOPIC);
 });
 
-test('cloud events link to the session on claude.ai and stay small enough for ntfy', () => {
+test('cloud events link to the session and carry the whole text, in parts that fit ntfy', () => {
   const env = { CLAUDE_CODE_REMOTE_SESSION_ID: 'cse_01GxmbzUjYnXTchYbFYhhFvJ' };
+  // varied text, so compression alone can't make it fit in one message
+  const long = Array.from({ length: 900 }, (_, i) => `${i}番目の行：ピン止め ${(i * 7919) % 104729} を確認しました。`).join('\n');
   const event = cloudEvent(
-    { hook_event_name: 'Stop', session_id: 'abc', cwd: '/home/user/app', last_assistant_message: '長い返事。'.repeat(2000) },
+    { hook_event_name: 'Stop', session_id: 'abc', cwd: '/home/user/app', last_assistant_message: long },
     env,
   );
   assert.equal(event.source, 'cloud');
   assert.equal(event.url, 'https://claude.ai/code/session_01GxmbzUjYnXTchYbFYhhFvJ');
-  assert.ok(Buffer.byteLength(JSON.stringify(event)) <= MAX_BODY);
-  assert.ok(event.message.startsWith('長い返事。'));
-  assert.ok(seal(event, newKey()).length < 4000);
+  assert.equal(event.message, long, 'not cut short');
+  const prompt = cloudEvent({ hook_event_name: 'UserPromptSubmit', session_id: 'abc', prompt: 'あ'.repeat(1000) }, env);
+  assert.equal(prompt.prompt.length, 1000, 'prompts are no longer cut at 300 characters');
+
+  const key = newKey();
+  const bodies = sealEvent(event, key);
+  assert.ok(bodies.length > 1);
+  assert.ok(bodies.every((b) => Buffer.byteLength(b) < 4096));
+  assert.equal(sealEvent({ event: 'Stop', session_id: 'x', message: 'short' }, key).length, 1);
+
+  // the pet puts the parts back together, in whatever order they come
+  const listener = new RelayListener({ topic: 'claude-pet-test-topic-0000', key });
+  const got = [];
+  listener.on('event', (e) => got.push(e));
+  for (const body of [...bodies].reverse()) listener.line(JSON.stringify({ event: 'message', id: 'x', message: body }));
+  assert.equal(got.length, 1);
+  assert.equal(got[0].message, long);
 });
 
 test('the hook is registered once per event, next to existing hooks, in both settings files', () => {

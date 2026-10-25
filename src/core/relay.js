@@ -7,6 +7,7 @@
 
 const http = require('http');
 const https = require('https');
+const zlib = require('zlib');
 const { EventEmitter } = require('events');
 const { unseal } = require('../shared/seal');
 
@@ -26,6 +27,7 @@ class RelayListener extends EventEmitter {
     this.watchdog = null;
     this.status = 'stopped';
     this.stopped = true;
+    this.parts = new Map(); // long events arrive compressed in parts: id → { n, got, count, at }
   }
 
   start() {
@@ -97,7 +99,33 @@ class RelayListener extends EventEmitter {
     if (!msg || msg.event !== 'message') return;
     if (msg.id) this.lastId = msg.id;
     const event = unseal(msg.message, this.key);
-    if (event && typeof event === 'object' && typeof event.session_id === 'string') this.emit('event', event);
+    if (event && typeof event === 'object' && event.part) this.addPart(event);
+    else if (event && typeof event === 'object' && typeof event.session_id === 'string') this.emit('event', event);
+  }
+
+  /** Collect the parts of a long event; once all are here, unpack it and pass it on. */
+  addPart({ part, z }) {
+    const { id, i, n } = part || {};
+    if (typeof id !== 'string' || !Number.isInteger(n) || n < 1 || n > 500 || !Number.isInteger(i) || i < 0 || i >= n) return;
+    if (typeof z !== 'string') return;
+    const now = Date.now();
+    for (const [key, entry] of this.parts) if (now - entry.at > 10 * 60e3) this.parts.delete(key);
+    let entry = this.parts.get(id);
+    if (!entry) {
+      entry = { n, got: new Array(n), count: 0, at: now };
+      this.parts.set(id, entry);
+    }
+    if (entry.n !== n || entry.got[i]) return;
+    entry.got[i] = Buffer.from(z, 'base64');
+    if (++entry.count < n) return;
+    this.parts.delete(id);
+    try {
+      const json = zlib.inflateRawSync(Buffer.concat(entry.got), { maxOutputLength: 2 * 1024 * 1024 }).toString('utf8');
+      const event = JSON.parse(json);
+      if (event && typeof event.session_id === 'string') this.emit('event', event);
+    } catch {
+      // damaged or incomplete
+    }
   }
 
   reconnect(conn, reason) {

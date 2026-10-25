@@ -16,5 +16,6 @@ for f in src/hook/cloud-hook.js src/hook/pet-hook.js src/shared/config.js src/sh
   curl -fsSL "$BASE/$f" -o "$DIR/$f"
 done
 umask 077
-printf '{"server":"%s","topic":"%s","key":"%s"}\n' "$SERVER" "$TOPIC" "$KEY" > "$DIR/config.json"
+# base: where the hook downloads newer versions of itself from
+printf '{"server":"%s","topic":"%s","key":"%s","base":"%s"}\n' "$SERVER" "$TOPIC" "$KEY" "$BASE" > "$DIR/config.json"
 node "$DIR/src/hook/cloud-hook.js" --install

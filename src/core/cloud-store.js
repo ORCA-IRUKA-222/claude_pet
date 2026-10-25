@@ -12,6 +12,7 @@ const KEEP = 30;
 const MAX_AGE_MS = 7 * 24 * 3600e3;
 const FIELDS = ['id', 'cwd', 'title', 'prompt', 'firstPrompt', 'message', 'url', 'updatedAt', 'messages'];
 const KEEP_MESSAGES = 20; // per session: the exchanges the relay carried, to show in the pet
+const KEEP_CHARS = 30000;
 
 function storeFile() {
   return path.join(homeDir(), 'cloud-sessions.json');
@@ -38,7 +39,9 @@ function saveCloudSessions(sessions, lastId, { now = Date.now() } = {}) {
     .slice(0, KEEP)
     .map((s) => ({
       ...Object.fromEntries(FIELDS.map((k) => [k, s[k] ?? null])),
-      messages: (Array.isArray(s.messages) ? s.messages : []).slice(-KEEP_MESSAGES),
+      messages: (Array.isArray(s.messages) ? s.messages : [])
+        .slice(-KEEP_MESSAGES)
+        .map((m) => ({ role: m.role, text: String(m.text || '').slice(0, KEEP_CHARS) })),
     }));
   const text = JSON.stringify({ lastId: lastId || null, sessions: keep }, null, 2) + '\n';
   // called after every change in the list; most of them aren't about cloud sessions
