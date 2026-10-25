@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-const { spawn } = require('child_process');
+const { spawn, spawnSync, execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { APP_ROOT, claudeDir, loadConfig, saveConfig } = require('../src/shared/config');
@@ -19,6 +19,7 @@ const HELP = `claude-pet — Claude Code のデスクトップペット
   claude-pet chat                クイックチャットを開く
   claude-pet quit                終了
   claude-pet status              セッションの状態を表示
+  claude-pet update              最新版に更新して起動し直す
   claude-pet doctor              うまく動かないときの診断
   claude-pet setup               Claude Code にフックと /pet, /hatch-pet を登録
   claude-pet uninstall           登録を解除
@@ -68,12 +69,47 @@ async function restartIfStale({ wait = true } = {}) {
   const running = await client.health();
   const local = buildId();
   if (!running || !local || running.build === local) return false;
-  await client.control('quit');
-  const until = Date.now() + 5000;
-  while (Date.now() < until && (await client.isRunning())) await new Promise((r) => setTimeout(r, 200));
+  await stopApp();
   launchApp();
   if (wait) await waitUntilRunning(15000);
   return true;
+}
+
+async function stopApp() {
+  await client.control('quit');
+  const until = Date.now() + 5000;
+  while (Date.now() < until && (await client.isRunning())) await new Promise((r) => setTimeout(r, 200));
+}
+
+function git(args) {
+  return execFileSync('git', args, { cwd: APP_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
+
+/** git pull (setting aside local edits), npm ci when the dependencies changed, then (re)start the pet. */
+async function update() {
+  if (!fs.existsSync(path.join(APP_ROOT, '.git'))) throw new Error('git clone したフォルダではないため更新できません');
+  const before = git(['rev-parse', 'HEAD']);
+  // npm link / npm install on Windows rewrite bin/claude-pet.js and package-lock.json, which blocks git pull
+  if (git(['status', '--porcelain', '--untracked-files=no'])) {
+    git(['stash', 'push', '-m', 'claude-pet update']);
+    console.log('手元の変更を git stash に退避しました（git stash list で確認できます）');
+  }
+  execFileSync('git', ['pull', '--ff-only'], { cwd: APP_ROOT, stdio: 'inherit' });
+  const after = git(['rev-parse', 'HEAD']);
+  const depsChanged = after !== before && git(['diff', '--name-only', before, after, '--', 'package.json', 'package-lock.json']);
+  if (depsChanged) {
+    // the running pet keeps Electron's files open, so npm ci can't replace them on Windows
+    if (await client.isRunning()) await stopApp();
+    const npm = spawnSync('npm', ['ci'], { cwd: APP_ROOT, stdio: 'inherit', shell: process.platform === 'win32' });
+    if (npm.status !== 0) throw new Error('npm ci に失敗しました');
+  }
+  const t = translator(loadConfig().language);
+  if (!(await client.isRunning())) {
+    await start();
+    return after === before ? t('cli.starting') : `${t('cli.updated')}\n${t('cli.starting')}`;
+  }
+  if (await restartIfStale()) return `${t('cli.updated')}\n${t('cli.restarted')}`;
+  return after === before ? t('cli.upToDate') : t('cli.updated');
 }
 
 async function start({ wait = true } = {}) {
@@ -370,6 +406,9 @@ async function main(argv) {
       break;
     case 'doctor':
       await doctor();
+      break;
+    case 'update':
+      console.log(await update());
       break;
     case 'status':
       if (!(await client.isRunning())) console.log(translator(loadConfig().language)('cli.notRunning'));

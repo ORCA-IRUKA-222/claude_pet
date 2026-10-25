@@ -1,0 +1,3 @@
+# npm link rewrites a CRLF shebang line to LF, which left this file "modified" on Windows
+# and blocked git pull. Keep it LF in every checkout.
+bin/*.js text eol=lf
