@@ -1,7 +1,7 @@
 ---
 name: pet
-description: デスクトップのペット（claude-pet）を表示・非表示・ミニ表示にする、またはペットを切り替える。
-argument-hint: "[show | hide | mini | full | list | use <id> | quit]"
+description: デスクトップのペット（claude-pet）を表示・非表示・ミニ表示にする、ペットを切り替える、タイマー・ポモドーロ・メモ・おやすみモードを使う。
+argument-hint: "[show | hide | mini | full | list | use <id> | timer <時間> | pomo | memo <内容> | dnd [時間 | off] | quit]"
 disable-model-invocation: true
 ---
 

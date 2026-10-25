@@ -2,7 +2,21 @@
 
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
-const EVENTS = new Set(['state', 'transition', 'config', 'pet', 'command', 'quick-event']);
+const EVENTS = new Set([
+  'state',
+  'transition',
+  'config',
+  'pet',
+  'command',
+  'quick-event',
+  'timers',
+  'memos',
+  'calendar',
+  'alarm',
+  'digest',
+  'attach',
+  'say',
+]);
 
 contextBridge.exposeInMainWorld('pet', {
   init: () => ipcRenderer.invoke('init'),
@@ -38,4 +52,18 @@ contextBridge.exposeInMainWorld('pet', {
   setQuickTarget: (target) => ipcRenderer.send('quick-target', target),
   quickStop: () => ipcRenderer.send('quick-stop'),
   chooseFolder: (current) => ipcRenderer.invoke('choose-folder', current),
+
+  // Claude Code sessions
+  answerPermission: (id, behavior) => ipcRenderer.send('permission-answer', { id, behavior }),
+  pauseSession: (id) => ipcRenderer.send('pause-session', id),
+  cancelPause: (id) => ipcRenderer.send('cancel-pause', id),
+  openFile: (sessionId, file, reveal = false) => ipcRenderer.invoke('open-file', { sessionId, file, reveal }),
+
+  screenshot: () => ipcRenderer.invoke('screenshot'),
+
+  // Tools
+  timer: (action, value) => ipcRenderer.invoke('timer', { action, value }),
+  memo: (request) => ipcRenderer.invoke('memo', request),
+  calendarSetUrl: (url) => ipcRenderer.invoke('calendar-set-url', url),
+  calendarRefresh: () => ipcRenderer.send('calendar-refresh'),
 });

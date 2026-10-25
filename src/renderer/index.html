@@ -18,8 +18,18 @@
               <span data-i18n="ui.sessions"></span>
               <span class="tab-count" id="sessions-count"></span>
             </button>
-            <button type="button" class="tab" data-tab="chat" role="tab">
-              <span data-i18n="ui.quickChat"></span>
+            <button type="button" class="tab" data-tab="chat" role="tab" data-i18n-title="ui.quickChat">
+              <span data-i18n="ui.tab.chat"></span>
+            </button>
+            <button type="button" class="tab" data-tab="timer" role="tab">
+              <span data-i18n="ui.tab.timer"></span>
+              <span class="tab-dot" id="timer-dot" hidden></span>
+            </button>
+            <button type="button" class="tab" data-tab="memo" role="tab">
+              <span data-i18n="ui.tab.memo"></span>
+            </button>
+            <button type="button" class="tab" data-tab="calendar" role="tab">
+              <span data-i18n="ui.tab.calendar"></span>
             </button>
           </nav>
           <button type="button" class="icon-button" id="panel-close" aria-label="close">✕</button>
@@ -42,28 +52,47 @@
             <button type="button" class="text-button" id="chat-new" data-i18n="ui.newChat"></button>
             <span class="spacer"></span>
             <button type="button" class="text-button" id="chat-stop" data-i18n="ui.stop" hidden></button>
+            <button
+              type="button"
+              class="text-button"
+              id="chat-memo"
+              data-i18n="ui.saveMemoShort"
+              data-i18n-title="ui.saveMemo"
+            ></button>
             <button type="button" class="text-button" id="chat-copy" data-i18n="ui.copy"></button>
             <button type="button" class="text-button" id="chat-app" data-i18n="ui.openInAppShort"></button>
             <button type="button" class="text-button" id="chat-terminal" data-i18n="ui.continueInTerminal"></button>
           </div>
         </div>
+
+        <div class="tab-body tool-tab" id="tab-tools" hidden></div>
       </section>
 
       <div id="bubble" class="bubble" hidden>
         <span class="dot"></span>
         <div class="bubble-lines">
-          <div class="bubble-title" id="bubble-title"></div>
+          <div class="bubble-head">
+            <div class="bubble-title" id="bubble-title"></div>
+            <span class="bubble-clock" id="bubble-clock" hidden></span>
+            <button type="button" class="bubble-icon pause-icon" id="bubble-pause" hidden></button>
+          </div>
           <div class="bubble-sub" id="bubble-sub"></div>
+          <div class="bubble-actions" id="bubble-actions" hidden></div>
+          <div class="progress bubble-progress" id="bubble-progress" hidden>
+            <div class="progress-fill" id="bubble-progress-fill"></div>
+          </div>
         </div>
       </div>
 
       <div id="stage" class="stage">
         <div id="sprite" class="sprite" aria-label="pet"></div>
         <span id="badge" class="badge" hidden></span>
+        <span id="mood" class="mood" hidden></span>
       </div>
 
       <div id="mini" class="mini" hidden>
         <span class="dot"></span>
+        <span class="mini-mood" id="mini-mood" hidden></span>
         <span class="mini-label" id="mini-label"></span>
         <span class="badge mini-badge" id="mini-badge" hidden></span>
       </div>
@@ -90,8 +119,10 @@
 
     <script src="../shared/atlas.js"></script>
     <script src="../shared/i18n.js"></script>
+    <script src="../shared/time.js"></script>
     <script src="sprite.js"></script>
     <script src="markdown.js"></script>
+    <script src="tools.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

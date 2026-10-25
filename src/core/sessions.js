@@ -17,6 +17,8 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
 // Tools that stop and wait for the user even without a permission prompt.
 const ASK_TOOLS = { AskUserQuestion: 'question', ExitPlanMode: 'plan' };
 const WAITING_NOTIFICATIONS = new Set(['permission_prompt', 'elicitation_dialog', 'elicitation_url_dialog', 'agent_needs_input']);
+const MAX_FILES = 100;
+const TODO_STATUSES = new Set(['pending', 'in_progress', 'completed']);
 
 function toolActivity(tool) {
   if (READ_TOOLS.has(tool)) return 'reading';
@@ -57,6 +59,12 @@ function newSession(id, cwd, ts, extra = {}) {
     startedAt: ts,
     updatedAt: ts,
     lastTs: 0,
+    turnStartedAt: null, // when the current prompt was sent
+    lastDuration: null, // how long the last finished turn took
+    files: [], // files Claude changed in this turn
+    todos: [], // Claude's to-do list: { id, text, active, status }
+    paused: false,
+    pauseRequested: false,
     ...extra,
   };
 }
@@ -65,6 +73,14 @@ function newSession(id, cwd, ts, extra = {}) {
 function effectiveStatus(session) {
   if (session.status === 'ready' && !session.unread) return 'idle';
   return session.status;
+}
+
+/** Claude's to-do list (TodoWrite or the TaskCreate/TaskUpdate tools) as done / total / current. */
+function todoProgress(todos) {
+  if (!todos || !todos.length) return null;
+  const done = todos.filter((t) => t.status === 'completed').length;
+  const current = todos.find((t) => t.status === 'in_progress') || null;
+  return { done, total: todos.length, current: current ? current.active || current.text : null };
 }
 
 class SessionTracker extends EventEmitter {
@@ -127,6 +143,12 @@ class SessionTracker extends EventEmitter {
 
   apply(s, e) {
     const waiting = s.status === 'waiting';
+    if (Array.isArray(e.todos)) this.setTodos(s, e.todos);
+    if (e.task && e.task.id != null) this.updateTask(s, e.task);
+    if (typeof e.file_path === 'string' && e.file_path && !s.files.includes(e.file_path) && s.files.length < MAX_FILES) {
+      s.files = [...s.files, e.file_path];
+    }
+
     switch (e.event) {
       case 'SessionStart':
         break;
@@ -138,6 +160,20 @@ class SessionTracker extends EventEmitter {
         s.message = null;
         s.error = null;
         s.unread = false;
+        s.turnStartedAt = e.ts || this.now();
+        s.lastDuration = null;
+        s.files = [];
+        s.paused = false;
+        s.pauseRequested = false;
+        // A finished list belongs to the previous piece of work.
+        if (s.todos.length && s.todos.every((t) => t.status === 'completed')) s.todos = [];
+        break;
+
+      case 'PetPaused':
+        this.finishTurn(s, e.ts);
+        this.setIdle(s);
+        s.paused = true;
+        s.pauseRequested = false;
         break;
 
       case 'PreToolUse':
@@ -165,6 +201,7 @@ class SessionTracker extends EventEmitter {
           if (!waiting) this.setWaiting(s, 'input', e.message || null, null);
         } else if (e.notification_type === 'idle_prompt' && s.status === 'running') {
           // No Stop arrived (the turn was interrupted), and Claude is now idle.
+          this.finishTurn(s, e.ts);
           this.setIdle(s);
         }
         break;
@@ -195,17 +232,21 @@ class SessionTracker extends EventEmitter {
         break;
 
       case 'Stop':
+        this.finishTurn(s, e.ts);
         s.status = 'ready';
         s.unread = true;
         s.activity = null;
         s.detail = null;
         s.waitingTool = null;
         s.subagents = 0;
+        s.pauseRequested = false;
         s.message = e.message || null;
         s.backgroundTasks = e.background_tasks || 0;
         break;
 
       case 'StopFailure':
+        this.finishTurn(s, e.ts);
+        s.pauseRequested = false;
         s.status = 'failed';
         s.unread = true;
         s.activity = null;
@@ -240,6 +281,54 @@ class SessionTracker extends EventEmitter {
     s.detail = null;
     s.waitingTool = null;
     s.unread = false;
+  }
+
+  finishTurn(s, ts) {
+    if (s.turnStartedAt == null) return;
+    s.lastDuration = Math.max(0, (Number.isFinite(ts) ? ts : this.now()) - s.turnStartedAt);
+    s.turnStartedAt = null;
+  }
+
+  setTodos(s, todos) {
+    s.todos = todos
+      .filter((t) => t && typeof t.text === 'string')
+      .map((t) => ({
+        id: null,
+        text: t.text,
+        active: t.active || null,
+        status: TODO_STATUSES.has(t.status) ? t.status : 'pending',
+      }));
+  }
+
+  updateTask(s, task) {
+    const id = String(task.id);
+    if (task.status === 'deleted') {
+      s.todos = s.todos.filter((t) => t.id !== id);
+      return;
+    }
+    const existing = s.todos.find((t) => t.id === id);
+    const next = {
+      id,
+      text: task.subject || (existing && existing.text) || `#${id}`,
+      active: task.active || (existing && existing.active) || null,
+      status: TODO_STATUSES.has(task.status) ? task.status : (existing && existing.status) || 'pending',
+    };
+    s.todos = existing ? s.todos.map((t) => (t.id === id ? next : t)) : [...s.todos, next];
+  }
+
+  /** The pet asked to pause this session; the gate hook stops it at the next tool call. */
+  setPauseRequested(id, requested) {
+    const s = this.sessions.get(id);
+    if (!s) return false;
+    s.pauseRequested = Boolean(requested);
+    this.emit('change');
+    return true;
+  }
+
+  /** A changed file recorded for this session (so the UI can only open files Claude touched). */
+  hasFile(id, file) {
+    const s = this.sessions.get(id);
+    return Boolean(s && s.files.includes(file));
   }
 
   markRead(id) {
@@ -301,6 +390,7 @@ class SessionTracker extends EventEmitter {
         this.sessions.delete(id);
         changed = true;
       } else if ((s.status === 'running' || s.status === 'waiting') && quiet > this.staleMs) {
+        this.finishTurn(s, s.lastTs);
         this.setIdle(s);
         s.stale = true;
         changed = true;
@@ -312,7 +402,13 @@ class SessionTracker extends EventEmitter {
 
   snapshot(s) {
     const { lastTs, beforeCompact, waitingTool, ...rest } = s;
-    return { ...rest, effectiveStatus: effectiveStatus(s) };
+    return {
+      ...rest,
+      files: [...s.files],
+      todos: s.todos.map((t) => ({ ...t })),
+      todoProgress: todoProgress(s.todos),
+      effectiveStatus: effectiveStatus(s),
+    };
   }
 
   list() {
@@ -336,4 +432,4 @@ class SessionTracker extends EventEmitter {
   }
 }
 
-module.exports = { SessionTracker, effectiveStatus, toolActivity, PRIORITY };
+module.exports = { SessionTracker, effectiveStatus, toolActivity, todoProgress, PRIORITY };

@@ -10,15 +10,19 @@ const {
   Tray,
   Notification,
   clipboard,
+  desktopCapturer,
   dialog,
   globalShortcut,
   ipcMain,
   nativeImage,
+  net,
+  powerMonitor,
   screen,
   shell,
+  systemPreferences,
 } = require('electron');
 
-const { APP_ROOT, getPort, homeDir, loadConfig, saveConfig } = require('../shared/config');
+const { APP_ROOT, getPort, homeDir, loadConfig, saveConfig, ensureSecret, permissionTimeoutMs } = require('../shared/config');
 const { translator, formatMinutes } = require('../shared/i18n');
 const { SessionTracker } = require('../core/sessions');
 const { startServer } = require('../core/server');
@@ -27,6 +31,13 @@ const { QuickChat, CLOUD_ID, modelArgs } = require('../core/quickchat');
 const { recentSessions, findTranscript, readConversation } = require('../core/history');
 const rotation = require('../core/rotation');
 const { openInTerminal, openCloudTask } = require('../core/terminal');
+const { openInEditor } = require('../core/editor');
+const { TimeKeeper } = require('../core/timers');
+const { Modes } = require('../core/modes');
+const { MemoStore } = require('../core/memos');
+const { CalendarFeed } = require('../core/calendar');
+const { PermissionBroker } = require('../core/permissions');
+const { requestPause, cancelPause } = require('../shared/pause');
 const installer = require('../core/installer');
 const autostart = require('../core/autostart');
 const { findClaude, isClaudeExecutable } = require('../core/claude-path');
@@ -37,6 +48,9 @@ const { version } = require('../../package.json');
 const { buildId } = require('../shared/build');
 
 const SCALES = { small: 0.5, medium: 0.75, large: 1 };
+const DND_MINUTES = [30, 60, 120];
+const TURN_OVER = new Set(['UserPromptSubmit', 'Stop', 'StopFailure', 'SessionEnd']);
+const MAX_SCREENSHOTS = 20;
 const ROTATION_INTERVALS = [15, 30, 60, 120, 180];
 
 const config = loadConfig();
@@ -50,6 +64,8 @@ let anchor = null; // bottom-centre of the pet, in screen coordinates
 let drag = null;
 let saveTimer = null;
 let quitting = false;
+let awayCause = null; // 'idle' | 'lock' | 'sleep'
+const power = { locked: false, suspended: false };
 
 const tracker = new SessionTracker({ staleMs: config.staleMinutes * 60e3 });
 // The pet asks the strongest model by default; weaker ones only if chosen in the menu.
@@ -115,6 +131,12 @@ function linkCloudTask(event) {
   sendToRenderer('quick-event', { type: 'cloud-linked', prompt: task.prompt, cloudSessionId: m[1], url: event.url });
 }
 
+const timeKeeper = new TimeKeeper({ pomodoro: config.pomodoro });
+const modes = new Modes({ dnd: config.dnd });
+const memos = new MemoStore();
+const calendar = new CalendarFeed({ fetch: (url, init) => net.fetch(url, init) });
+const permissions = new PermissionBroker({ timeoutMs: permissionTimeoutMs(config) });
+
 function persist(changes) {
   Object.assign(config, changes);
   clearTimeout(saveTimer);
@@ -160,12 +182,30 @@ function rendererConfig() {
     quickChatModel: (MODELS.find(([id]) => id === currentModel()) || [null, currentModel()])[1],
     quickChatEffort: currentEffort(),
     home: app.getPath('home'),
+    greetings: config.greetings !== false,
+    permissionPrompt: config.permissionPrompt.enabled !== false,
   };
 }
 
+function appState() {
+  return { sessions: tracker.list(), aggregate: tracker.aggregate(), permissions: permissions.list(), modes: modes.snapshot() };
+}
+
 function pushState() {
-  sendToRenderer('state', { sessions: tracker.list(), aggregate: tracker.aggregate() });
+  sendToRenderer('state', appState());
   updateTray();
+}
+
+function pushTimers() {
+  sendToRenderer('timers', timeKeeper.snapshot());
+}
+
+function pushMemos() {
+  sendToRenderer('memos', memos.list());
+}
+
+function pushCalendar() {
+  sendToRenderer('calendar', calendar.snapshot());
 }
 
 // ---------------------------------------------------------------- window
@@ -209,6 +249,7 @@ function createWindow() {
     minimizable: false,
     maximizable: false,
     backgroundColor: '#00000000',
+    acceptFirstMouse: true, // macOS: the first click on the unfocused pet (e.g. 許可) should count
     title: 'Claude Pet',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -260,6 +301,34 @@ function setPet(key, { announce = false } = {}) {
   sendToRenderer('pet', petForRenderer(pet, announce));
   updateTray();
   return pet;
+}
+
+// ---------------------------------------------------------------- おやすみモード
+
+function clockText(ts) {
+  return new Date(ts).toLocaleTimeString(config.language === 'en' ? 'en-US' : 'ja-JP', { hour: '2-digit', minute: '2-digit' });
+}
+
+function dndUntilText() {
+  const dnd = modes.snapshot().dnd;
+  if (!dnd) return '';
+  return dnd.until == null ? t('cli.dndForever') : t('cli.dndUntil', { time: clockText(dnd.until) });
+}
+
+/** minutes: a number, or null for "until turned off". */
+function setDnd(minutes) {
+  modes.setDnd({ until: minutes ? Date.now() + minutes * 60e3 : null, allowWaiting: config.dnd.allowWaiting !== false });
+}
+
+function saveDnd() {
+  const dnd = modes.snapshot().dnd;
+  persist({
+    dnd: {
+      active: Boolean(dnd),
+      until: dnd ? dnd.until : null,
+      allowWaiting: dnd ? dnd.allowWaiting : config.dnd.allowWaiting !== false,
+    },
+  });
 }
 
 /** A pet picked by hand stays for a full interval before the rotation moves on. */
@@ -318,9 +387,32 @@ function buildMenu() {
   });
   const scaleKey = Object.keys(SCALES).find((k) => SCALES[k] === config.scale) || 'small';
   const visible = Boolean(win && win.isVisible());
+  const dnd = modes.snapshot().dnd;
   return Menu.buildFromTemplate([
     { label: t('menu.sessions'), click: () => openPanel('sessions') },
     { label: t('menu.quickChat'), accelerator: config.shortcuts.quickChat || undefined, click: () => openQuickChat() },
+    { label: t('menu.screenshot'), accelerator: config.shortcuts.screenshot || undefined, click: () => askAboutScreenshot() },
+    { label: t('menu.tools'), click: () => openPanel('timer') },
+    { type: 'separator' },
+    {
+      label: dnd ? t('menu.dndActive', { until: dndUntilText() }) : t('menu.dnd'),
+      submenu: [
+        ...DND_MINUTES.map((m) => ({ label: t(`menu.dnd.${m}`), click: () => setDnd(m) })),
+        { label: t('menu.dnd.forever'), click: () => setDnd(null) },
+        { type: 'separator' },
+        {
+          label: t('menu.dnd.allowWaiting'),
+          type: 'checkbox',
+          checked: dnd ? dnd.allowWaiting : config.dnd.allowWaiting !== false,
+          click: (item) => {
+            persist({ dnd: { ...config.dnd, allowWaiting: item.checked } });
+            modes.setDndAllowWaiting(item.checked);
+            saveDnd();
+          },
+        },
+        { label: t('menu.dnd.off'), enabled: Boolean(dnd), click: () => modes.clearDnd() },
+      ],
+    },
     { type: 'separator' },
     {
       label: t('menu.pets'),
@@ -392,6 +484,25 @@ function buildMenu() {
       type: 'checkbox',
       checked: config.notifications,
       click: (item) => persist({ notifications: item.checked }),
+    },
+    {
+      label: t('menu.permissionPrompt'),
+      type: 'checkbox',
+      checked: config.permissionPrompt.enabled !== false,
+      click: (item) => {
+        persist({ permissionPrompt: { ...config.permissionPrompt, enabled: item.checked } });
+        if (!item.checked) permissions.cancelAll();
+        sendToRenderer('config', rendererConfig());
+      },
+    },
+    {
+      label: t('menu.greetings'),
+      type: 'checkbox',
+      checked: config.greetings !== false,
+      click: (item) => {
+        persist({ greetings: item.checked });
+        sendToRenderer('config', rendererConfig());
+      },
     },
     {
       label: t('menu.alwaysOnTop'),
@@ -583,7 +694,9 @@ function updateTray() {
   const agg = tracker.aggregate();
   const attention = agg.counts.waiting + agg.counts.failed + agg.counts.ready;
   const name = pet ? `${pet.displayName} — ` : '';
-  tray.setToolTip(`Claude Pet — ${name}${t(`status.${agg.status}`)}${attention ? ` (${attention})` : ''}`);
+  const mode = modes.snapshot();
+  const modeText = mode.dnd ? ` · ${t('mode.dnd')}` : mode.focus ? ` · ${t('mode.focus')}` : '';
+  tray.setToolTip(`Claude Pet — ${name}${t(`status.${agg.status}`)}${attention ? ` (${attention})` : ''}${modeText}`);
   if (process.platform === 'darwin') tray.setTitle(attention ? String(attention) : '');
   tray.setContextMenu(buildMenu());
 }
@@ -626,17 +739,219 @@ function openQuickChat() {
 
 // ---------------------------------------------------------------- notifications
 
+function notify(title, body = '', { silent = false } = {}) {
+  if (!Notification.isSupported()) return;
+  new Notification({ title, body: String(body).slice(0, 200), silent }).show();
+}
+
 function notifyTransition({ session, to }) {
-  sendToRenderer('transition', { session, to });
-  if (!config.notifications || !Notification.isSupported()) return;
-  if (!['waiting', 'ready', 'failed'].includes(to) || session.source === 'quickchat') return;
-  if (to === 'ready' && !session.unread) return;
+  const attention =
+    ['waiting', 'ready', 'failed'].includes(to) && session.source !== 'quickchat' && (to !== 'ready' || session.unread);
+  if (attention) modes.record(to);
+  const held = attention && modes.holds(to);
+  sendToRenderer('transition', { session, to, held });
+  if (!attention || held || !config.notifications) return;
   const body = to === 'ready' ? session.message || '' : session.detail || session.message || '';
-  new Notification({
-    title: t(`notify.${to}`, { project: session.title || session.project }),
-    body: body.slice(0, 200),
-    silent: to === 'ready',
-  }).show();
+  notify(t(`notify.${to}`, { project: session.title || session.project }), body, { silent: to === 'ready' });
+}
+
+// ---------------------------------------------------------------- hook events
+
+function handleEvent(event) {
+  if (!event || typeof event !== 'object') return;
+  permissions.observe(event);
+  // A pause that never reached a tool call shouldn't stop the next turn.
+  if (TURN_OVER.has(event.event) && typeof event.session_id === 'string') cancelPause(event.session_id);
+  tracker.handle(event);
+}
+
+function handlePermission(event, options) {
+  if (config.permissionPrompt.enabled === false) return null;
+  return permissions.request(event, options);
+}
+
+// ---------------------------------------------------------------- away / power
+
+function checkAway() {
+  let idle = 0;
+  try {
+    idle = powerMonitor.getSystemIdleTime();
+  } catch {
+    idle = 0;
+  }
+  const minutes = Number(config.awayMinutes) > 0 ? Number(config.awayMinutes) : 5;
+  const cause = power.suspended ? 'sleep' : power.locked ? 'lock' : idle >= minutes * 60 ? 'idle' : null;
+  // Remember why the user left; going to sleep while already away still counts as sleep.
+  if (cause && (!modes.away || cause === 'sleep')) awayCause = cause;
+  modes.setAway(Boolean(cause));
+}
+
+function watchPower() {
+  powerMonitor.on('lock-screen', () => {
+    power.locked = true;
+    checkAway();
+  });
+  powerMonitor.on('unlock-screen', () => {
+    power.locked = false;
+    checkAway();
+  });
+  powerMonitor.on('suspend', () => {
+    power.suspended = true;
+    checkAway();
+  });
+  powerMonitor.on('resume', () => {
+    power.suspended = false;
+    checkAway();
+    refreshCalendar();
+  });
+  setInterval(checkAway, 15e3).unref();
+}
+
+// ---------------------------------------------------------------- timers
+
+function wireTimers() {
+  timeKeeper.on('change', () => {
+    modes.setFocus(timeKeeper.isFocusing());
+    pushTimers();
+  });
+  timeKeeper.on('timer-done', ({ label }) => {
+    if (win && !win.isVisible()) setVisible(true);
+    sendToRenderer('alarm', { kind: 'timer', label });
+    notify(t('notify.timer'), label || '');
+  });
+  timeKeeper.on('pomodoro-phase', ({ from, to }) => {
+    const minutes = to ? Math.round(timeKeeper.phaseLength(to) / 60e3) : 0;
+    sendToRenderer('alarm', { kind: 'pomodoro', from, to, minutes });
+    if (from === 'focus' && to) notify(t('notify.pomoBreak', { min: minutes }));
+    else if (from && to === 'focus') notify(t('notify.pomoFocus', { min: minutes }));
+  });
+}
+
+function timerCommand(action, value = {}) {
+  switch (action) {
+    case 'start':
+      return timeKeeper.startTimer(value.ms, value.label);
+    case 'pause':
+      return timeKeeper.pauseTimer();
+    case 'resume':
+      return timeKeeper.resumeTimer();
+    case 'reset':
+      return timeKeeper.resetTimer();
+    case 'sw-start':
+      return timeKeeper.startStopwatch();
+    case 'sw-pause':
+      return timeKeeper.pauseStopwatch();
+    case 'sw-reset':
+      return timeKeeper.resetStopwatch();
+    case 'pomo-start':
+      return timeKeeper.startPomodoro();
+    case 'pomo-pause':
+      return timeKeeper.pausePomodoro();
+    case 'pomo-skip':
+      return timeKeeper.skipPomodoro();
+    case 'pomo-stop':
+      return timeKeeper.stopPomodoro();
+    default:
+      throw new Error(`unknown timer action: ${action}`);
+  }
+}
+
+// ---------------------------------------------------------------- calendar
+
+let calendarTimer = null;
+
+async function refreshCalendar() {
+  if (!calendar.url) return;
+  pushCalendar();
+  await calendar.refresh();
+  pushCalendar();
+}
+
+function scheduleCalendar() {
+  clearInterval(calendarTimer);
+  const minutes = Math.max(5, Number(config.calendar.refreshMinutes) || 15);
+  calendarTimer = setInterval(refreshCalendar, minutes * 60e3);
+  calendarTimer.unref();
+}
+
+function checkReminders() {
+  if (!calendar.url || modes.snapshot().dnd) return;
+  const minutes = Math.max(1, Number(config.calendar.remindMinutes) || 5);
+  for (const event of calendar.dueReminders(minutes)) {
+    const min = Math.max(1, Math.round((event.start - Date.now()) / 60e3));
+    sendToRenderer('alarm', { kind: 'calendar', title: event.summary, start: event.start, minutes: min });
+    notify(t('cal.reminder', { min, title: event.summary || t('cal.untitled') }), event.location || '');
+  }
+}
+
+async function setCalendarUrl(url) {
+  calendar.setUrl(url || null); // throws on an invalid URL
+  persist({ calendar: { ...config.calendar, url: calendar.url } });
+  pushCalendar();
+  await refreshCalendar();
+  return calendar.snapshot();
+}
+
+// ---------------------------------------------------------------- screenshot
+
+function stamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+function pruneScreenshots(dir) {
+  const shots = fs
+    .readdirSync(dir)
+    .filter((f) => /^shot-.*\.png$/.test(f))
+    .sort();
+  for (const old of shots.slice(0, Math.max(0, shots.length - MAX_SCREENSHOTS))) fs.rmSync(path.join(dir, old), { force: true });
+}
+
+/** Capture the display under the cursor (with the pet hidden) and save it as a PNG. */
+async function captureScreen() {
+  if (process.platform === 'darwin' && systemPreferences.getMediaAccessStatus('screen') === 'denied') {
+    throw Object.assign(new Error('permission'), { code: 'permission' });
+  }
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const wasVisible = Boolean(win && win.isVisible());
+  if (wasVisible) win.hide();
+  try {
+    await new Promise((r) => setTimeout(r, 250));
+    const size = {
+      width: Math.round(display.size.width * display.scaleFactor),
+      height: Math.round(display.size.height * display.scaleFactor),
+    };
+    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: size });
+    const source = sources.find((s) => String(s.display_id) === String(display.id)) || sources[0];
+    if (!source || source.thumbnail.isEmpty()) throw Object.assign(new Error('no image'), { code: 'permission' });
+    const dir = path.join(homeDir(), 'screenshots');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `shot-${stamp()}.png`);
+    fs.writeFileSync(file, source.thumbnail.toPNG());
+    pruneScreenshots(dir);
+    return file;
+  } finally {
+    if (wasVisible) win.showInactive();
+  }
+}
+
+async function askAboutScreenshot() {
+  try {
+    const file = await captureScreen();
+    openQuickChat();
+    sendToRenderer('attach', { files: [file], kind: 'screenshot' });
+    return { file };
+  } catch (err) {
+    setVisible(true);
+    sendToRenderer('say', {
+      text:
+        err.code === 'permission' && process.platform === 'darwin'
+          ? t('say.shotPermission')
+          : t('say.shotFailed', { error: err.message }),
+    });
+    return { error: err.message };
+  }
 }
 
 // ---------------------------------------------------------------- control (CLI / slash command)
@@ -666,6 +981,28 @@ async function handleControl({ action, value }) {
       if (!p) throw Object.assign(new Error('pet not found'), { status: 404 });
       return { pet: p.key };
     }
+    case 'timer': {
+      const { command, ...rest } = value || {};
+      try {
+        timerCommand(String(command || ''), rest);
+      } catch (err) {
+        throw Object.assign(err, { status: 400 });
+      }
+      if (command === 'start' || command === 'pomo-start') setVisible(true);
+      return { timers: timeKeeper.snapshot() };
+    }
+    case 'memo-add': {
+      const memo = memos.add({ text: value && value.text, cwd: value && value.cwd });
+      pushMemos();
+      return { memo };
+    }
+    case 'dnd': {
+      if (value && value.off) modes.clearDnd();
+      else setDnd(value && Number(value.minutes) > 0 ? Number(value.minutes) : null);
+      return { dnd: modes.snapshot().dnd, until: dndUntilText() };
+    }
+    case 'screenshot':
+      return askAboutScreenshot();
     case 'next': {
       const p = rotateNow();
       return { pet: p ? p.key : null, petName: p ? p.displayName : null };
@@ -690,7 +1027,10 @@ function registerIpc() {
   ipcMain.handle('init', () => ({
     config: rendererConfig(),
     pet: petForRenderer(pet),
-    state: { sessions: tracker.list(), aggregate: tracker.aggregate() },
+    state: appState(),
+    timers: timeKeeper.snapshot(),
+    memos: memos.list(),
+    calendar: calendar.snapshot(),
     hooksInstalled: installer.isInstalled(),
     version,
   }));
@@ -724,7 +1064,6 @@ function registerIpc() {
   ipcMain.on('mark-all-read', () => tracker.markAllRead());
   ipcMain.on('dismiss', (_e, id) => tracker.dismiss(String(id)));
   ipcMain.on('copy', (_e, text) => clipboard.writeText(String(text || '')));
-
   // a link in one of Claude's replies: web pages only
   ipcMain.on('open-link', (_e, url) => {
     try {
@@ -883,40 +1222,107 @@ function registerIpc() {
       return { ok: true, browser: true };
     }
   });
+
+  // Claude Code sessions
+  ipcMain.on('permission-answer', (_e, { id, behavior }) => permissions.answer(String(id), behavior));
+  ipcMain.on('pause-session', (_e, id) => {
+    if (requestPause(String(id))) tracker.setPauseRequested(String(id), true);
+  });
+  ipcMain.on('cancel-pause', (_e, id) => {
+    cancelPause(String(id));
+    tracker.setPauseRequested(String(id), false);
+  });
+  ipcMain.handle('open-file', async (_e, { sessionId, file, reveal }) => {
+    // Only files Claude changed in that session, so the renderer can't open arbitrary paths.
+    if (!tracker.hasFile(String(sessionId), String(file)) || !fs.existsSync(file)) return { ok: false };
+    try {
+      if (!reveal && (await openInEditor(file, { template: config.editorCommand }))) return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    shell.showItemInFolder(file);
+    return { ok: true, revealed: true };
+  });
+
+  // Tools
+  ipcMain.handle('timer', (_e, { action, value }) => {
+    try {
+      timerCommand(String(action), value || {});
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+  ipcMain.handle('memo', (_e, { action, id, text, cwd, changes }) => {
+    try {
+      if (action === 'add') memos.add({ text, cwd });
+      else if (action === 'update') memos.update(String(id), changes || {});
+      else if (action === 'remove') memos.remove(String(id));
+      else if (action === 'clear-done') memos.clearDone();
+      pushMemos();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+  ipcMain.handle('calendar-set-url', async (_e, url) => {
+    try {
+      return { ok: true, calendar: await setCalendarUrl(url) };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+  ipcMain.on('calendar-refresh', () => refreshCalendar());
+  ipcMain.handle('screenshot', () => askAboutScreenshot());
 }
 
 // ---------------------------------------------------------------- lifecycle
 
 function registerShortcuts() {
-  const { toggle, quickChat: chat } = config.shortcuts || {};
-  try {
-    if (toggle) globalShortcut.register(toggle, () => setVisible(!(win && win.isVisible())));
-    if (chat) globalShortcut.register(chat, () => openQuickChat());
-  } catch {
-    // An invalid or already-taken accelerator shouldn't stop the app.
+  const { toggle, quickChat: chat, screenshot: shot } = config.shortcuts || {};
+  for (const [accelerator, action] of [
+    [toggle, () => setVisible(!(win && win.isVisible()))],
+    [chat, () => openQuickChat()],
+    [shot, () => askAboutScreenshot()],
+  ]) {
+    if (!accelerator) continue;
+    try {
+      globalShortcut.register(accelerator, action);
+    } catch {
+      // An invalid or already-taken accelerator shouldn't stop the app.
+    }
   }
 }
 
 function quit() {
   quitting = true;
   clearTimeout(saveTimer);
+  permissions.cancelAll();
   saveConfig(config);
   app.quit();
 }
 
 async function boot() {
+  let secret = null;
+  try {
+    secret = ensureSecret();
+  } catch {
+    secret = null; // without it, permission prompts simply stay in the terminal
+  }
   try {
     await startServer({
       port: getPort(),
       version,
       build: buildId(),
+      secret,
+      onPermission: handlePermission,
       onEvent: (event, { fromExtension } = {}) => {
         if (!event || typeof event !== 'object') return;
         // a browser extension only reports claude.ai chats; it never tells where claude is
         if (fromExtension) tracker.handle({ ...event, claude_path: undefined, source: 'browser' });
         else {
           learnClaudePath(event.claude_path);
-          tracker.handle(event);
+          handleEvent(event);
         }
       },
       onControl: handleControl,
@@ -948,12 +1354,32 @@ async function boot() {
   setInterval(loadHistory, 10 * 60e3).unref();
   startRelay();
   tracker.on('transition', notifyTransition);
+  permissions.on('change', pushState);
+  modes.on('change', () => {
+    saveDnd();
+    pushState();
+  });
+  modes.on('digest', (digest) => {
+    sendToRenderer('digest', { ...digest, cause: digest.reason === 'away' ? awayCause : null });
+    if (digest.reason === 'away') awayCause = null;
+  });
   setInterval(() => tracker.prune(), 60e3).unref();
+  wireTimers();
+
+  try {
+    calendar.setUrl(config.calendar.url);
+  } catch {
+    calendar.setUrl(null);
+  }
+  scheduleCalendar();
+  setInterval(checkReminders, 30e3).unref();
 
   registerIpc();
   createWindow();
   createTray();
   registerShortcuts();
+  watchPower();
+  refreshCalendar();
   screen.on('display-removed', () => {
     if (win) applyBounds(win.getBounds().width, win.getBounds().height);
   });
@@ -971,6 +1397,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     quitting = true;
     quickChat.stop();
+    permissions.cancelAll();
     clearTimeout(saveTimer);
     saveConfig(config);
   });

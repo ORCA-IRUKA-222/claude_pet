@@ -1,6 +1,6 @@
 'use strict';
 
-/* global PetI18n, PetSprite */
+/* global PetI18n, PetSprite, PetMarkdown, PetTime, PetTools */
 
 const api = window.pet;
 const $ = (id) => document.getElementById(id);
@@ -10,18 +10,27 @@ const ui = {
   panel: $('panel'),
   bubble: $('bubble'),
   bubbleTitle: $('bubble-title'),
+  bubbleClock: $('bubble-clock'),
+  bubblePause: $('bubble-pause'),
   bubbleSub: $('bubble-sub'),
+  bubbleActions: $('bubble-actions'),
+  bubbleProgress: $('bubble-progress'),
+  bubbleProgressFill: $('bubble-progress-fill'),
   stage: $('stage'),
   badge: $('badge'),
+  mood: $('mood'),
   mini: $('mini'),
+  miniMood: $('mini-mood'),
   miniLabel: $('mini-label'),
   miniBadge: $('mini-badge'),
   sessionsCount: $('sessions-count'),
+  timerDot: $('timer-dot'),
   sessionList: $('session-list'),
   sessionsEmpty: $('sessions-empty'),
   setupHint: $('setup-hint'),
   tabSessions: $('tab-sessions'),
   tabChat: $('tab-chat'),
+  tabTools: $('tab-tools'),
   chatLog: $('chat-log'),
   chatStop: $('chat-stop'),
   composer: $('composer'),
@@ -33,11 +42,26 @@ const ui = {
 
 const sprite = new PetSprite($('sprite'));
 
+const TOOL_TABS = new Set(['timer', 'memo', 'calendar']);
+const ATTENTION = ['waiting', 'failed', 'ready'];
+
 const state = {
-  config: { scale: 0.5, mini: false, showBubble: true, language: 'ja', quickChatCwd: '', home: '' },
+  config: {
+    scale: 0.5,
+    mini: false,
+    showBubble: true,
+    language: 'ja',
+    quickChatCwd: '',
+    home: '',
+    greetings: true,
+    permissionPrompt: true,
+  },
   pet: null,
   sessions: [],
   aggregate: { status: 'idle', activity: null, counts: {}, primary: null, total: 0 },
+  permissions: [], // permission prompts waiting for 許可 / 拒否 in the pet
+  modes: { dnd: null, focus: false, away: false },
+  mood: { night: false, tired: false },
   hooksInstalled: true,
   panelOpen: false,
   tab: 'sessions',
@@ -48,8 +72,9 @@ const state = {
   cloning: false, // the composer asks for a GitHub repository instead of a message
   repos: { loading: false, list: [], index: 0 }, // your GitHub repositories, to pick one while cloning
   attachments: [], // files going with the next message (paths on this computer)
+  screenshots: new Set(), // which of them are screenshots, so the default question fits
   temporary: null, // a one-off animation (wave, jump) that overrides the status animation
-  toast: null, // { title, sub } shown in the bubble for a few seconds, e.g. when the pet changes
+  toast: null, // { title, sub, sticky } shown in the bubble, e.g. when the pet changes; sticky ones (alarms) stay until clicked
 };
 
 let t = PetI18n.translator('ja');
@@ -63,6 +88,27 @@ function el(tag, className, text) {
   if (className) node.className = className;
   if (text != null) node.textContent = text;
   return node;
+}
+
+function button(label, onClick, className = 'text-button') {
+  const b = el('button', className, label);
+  b.type = 'button';
+  b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    onClick(b, e);
+  });
+  return b;
+}
+
+function dirname(p) {
+  const parts = String(p || '')
+    .split(/[\\/]/)
+    .filter(Boolean);
+  return parts.length > 1 ? parts[parts.length - 2] : '';
+}
+
+function locale() {
+  return state.config.language === 'en' ? 'en-US' : 'ja-JP';
 }
 
 function basename(p) {
@@ -100,11 +146,13 @@ function activityText(s) {
   if (s.effectiveStatus === 'failed')
     return t(`error.${s.error}`) === `error.${s.error}` ? t('error.unknown') : t(`error.${s.error}`);
   if (s.effectiveStatus === 'ready') return t('bubble.ready');
+  if (s.paused && s.effectiveStatus === 'idle') return t('ui.paused');
   if (s.activity) return t(`activity.${s.activity}`);
   return t(`status.${s.effectiveStatus}`);
 }
 
 function detailText(s) {
+  if (s.pauseRequested && s.effectiveStatus === 'running') return t('ui.pauseRequested');
   switch (s.effectiveStatus) {
     case 'ready':
       return firstLine(s.message) || (s.backgroundTasks ? t('ui.backgroundTasks', { n: s.backgroundTasks }) : '');
@@ -113,6 +161,7 @@ function detailText(s) {
     case 'idle':
       return s.stale ? t('ui.stale') : firstLine(s.message) || firstLine(s.prompt);
     default:
+      if (s.todoProgress && s.todoProgress.current && !s.detail) return s.todoProgress.current;
       return s.detail || firstLine(s.prompt);
   }
 }
@@ -120,6 +169,49 @@ function detailText(s) {
 function attentionCount() {
   const c = state.aggregate.counts || {};
   return (c.waiting || 0) + (c.failed || 0) + (c.ready || 0);
+}
+
+/** Same rule as the main process: what おやすみモード / a pomodoro focus keeps out of the bubble. */
+function held(status) {
+  const m = state.modes || {};
+  if (!ATTENTION.includes(status)) return false;
+  if (status === 'waiting') return Boolean(m.dnd) && !m.dnd.allowWaiting;
+  return Boolean(m.dnd) || Boolean(m.focus);
+}
+
+function pendingPermission(sessionId) {
+  if (!state.config.permissionPrompt) return null;
+  return state.permissions.find((p) => p.sessionId === sessionId) || null;
+}
+
+/** Claude is on this prompt right now (the clock runs). */
+function isWorking(s) {
+  return s.turnStartedAt && (s.effectiveStatus === 'running' || s.effectiveStatus === 'waiting');
+}
+
+// ------------------------------------------------------------------ sound
+
+let audio = null;
+function beep(times = 1) {
+  try {
+    audio = audio || new AudioContext();
+    const start = audio.currentTime + 0.02;
+    for (let i = 0; i < times; i++) {
+      const osc = audio.createOscillator();
+      const gain = audio.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = i % 2 ? 660 : 880;
+      const at = start + i * 0.32;
+      gain.gain.setValueAtTime(0.0001, at);
+      gain.gain.exponentialRampToValueAtTime(0.2, at + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.25);
+      osc.connect(gain).connect(audio.destination);
+      osc.start(at);
+      osc.stop(at + 0.27);
+    }
+  } catch {
+    // no audio device
+  }
 }
 
 // ------------------------------------------------------------------ animation
@@ -156,14 +248,37 @@ function playOnce(name, loops = 1) {
 }
 
 let toastTimer = 0;
-function showToast(title, sub, ms = 6000) {
+function showToast(title, sub, ms = 6000, { sticky = false } = {}) {
+  // an alarm stays until it's clicked; small talk doesn't push it away
+  if (state.toast && state.toast.sticky && !sticky) return;
   clearTimeout(toastTimer);
-  state.toast = { title, sub };
-  toastTimer = setTimeout(() => {
-    state.toast = null;
-    render();
-  }, ms);
+  state.toast = { title, sub, sticky };
+  if (!sticky)
+    toastTimer = setTimeout(() => {
+      state.toast = null;
+      render();
+    }, ms);
   render();
+}
+
+function dismissToast() {
+  if (!state.toast) return false;
+  clearTimeout(toastTimer);
+  state.toast = null;
+  render();
+  return true;
+}
+
+/** A line from the pet (greetings, alarms, summaries). */
+function say(text, { duration = 6000, sticky = false } = {}) {
+  if (text) showToast(text, '', duration, { sticky });
+}
+
+function digestSummary(counts) {
+  return ['ready', 'waiting', 'failed']
+    .filter((k) => counts && counts[k] > 0)
+    .map((k) => t(`digest.${k}`, { n: counts[k] }))
+    .join(t('digest.separator'));
 }
 
 // ------------------------------------------------------------------ rendering
@@ -171,31 +286,100 @@ function showToast(title, sub, ms = 6000) {
 function applyI18n() {
   document.documentElement.lang = state.config.language;
   for (const node of document.querySelectorAll('[data-i18n]')) node.textContent = t(node.dataset.i18n);
+  for (const node of document.querySelectorAll('[data-i18n-title]')) node.title = t(node.dataset.i18nTitle);
+  ui.bubblePause.title = t('ui.pause');
+}
+
+function permissionButtons(perm, className) {
+  const box = el('div', className);
+  box.appendChild(button(t('perm.allow'), () => api.answerPermission(perm.id, 'allow'), 'pill-button allow'));
+  box.appendChild(button(t('perm.deny'), () => api.answerPermission(perm.id, 'deny'), 'pill-button deny'));
+  box.appendChild(button(t('perm.terminal'), () => api.answerPermission(perm.id, null), 'text-button muted'));
+  const seconds = Math.max(0, Math.ceil((perm.expiresAt - Date.now()) / 1000));
+  const left = el('span', 'perm-left', t('perm.remaining', { n: seconds }));
+  left.dataset.expires = String(perm.expiresAt);
+  box.appendChild(left);
+  return box;
+}
+
+function permissionBox(perm) {
+  const box = el('div', 'perm-box');
+  box.appendChild(el('div', 'section-title', t('perm.title')));
+  box.appendChild(el('div', 'perm-tool', perm.tool ? `${perm.toolName}: ${perm.tool}` : perm.toolName || ''));
+  box.appendChild(permissionButtons(perm, 'perm-row'));
+  return box;
+}
+
+function hideBubbleExtras() {
+  ui.bubbleClock.hidden = true;
+  delete ui.bubbleClock.dataset.since;
+  ui.bubblePause.hidden = true;
+  ui.bubbleActions.hidden = true;
+  ui.bubbleProgress.hidden = true;
 }
 
 function renderBubble() {
   const agg = state.aggregate;
   const s = agg.primary;
   const visible = state.config.showBubble && !state.config.mini && !state.panelOpen;
-  // a message for you shows even with the list open (in the input when that is open)
-  if (state.toast && !state.composerOpen && !state.config.mini) {
+  // a permission prompt answered from the pet comes before everything else
+  const perm = visible && s && s.effectiveStatus === 'waiting' ? pendingPermission(s.id) : null;
+  // a message for you shows even with the list open (in the input when that is open); alarms show in mini too
+  const toast = state.toast && !perm && !state.composerOpen && (!state.config.mini || state.toast.sticky);
+  if (toast) {
+    hideBubbleExtras();
     ui.bubble.hidden = false;
-    ui.bubble.className = 'bubble status-idle toast';
+    ui.bubble.className = `bubble status-idle toast${state.toast.sticky ? ' sticky' : ''}`;
     ui.bubbleTitle.textContent = state.toast.title;
-    ui.bubbleSub.replaceChildren(document.createTextNode(state.toast.sub));
-    ui.bubbleSub.hidden = false;
+    ui.bubbleSub.replaceChildren(document.createTextNode(state.toast.sub || ''));
+    ui.bubbleSub.hidden = !state.toast.sub;
     return;
   }
-  const show = visible && s && agg.status !== 'idle';
+  // おやすみモード and a pomodoro focus keep finished work quiet
+  const show = visible && s && agg.status !== 'idle' && (!held(agg.status) || Boolean(perm));
   ui.bubble.hidden = !show;
   if (!show) return;
   ui.bubble.className = `bubble status-${agg.status}`;
   const others = attentionCount() + (agg.counts.running || 0) - 1;
   ui.bubbleTitle.textContent = `${sessionName(s)} · ${activityText(s)}`;
+  ui.bubbleClock.hidden = !isWorking(s);
+  if (isWorking(s)) {
+    ui.bubbleClock.dataset.since = String(s.turnStartedAt);
+    ui.bubbleClock.textContent = PetTime.formatClock(Date.now() - s.turnStartedAt);
+  } else delete ui.bubbleClock.dataset.since;
+  ui.bubblePause.hidden = !(s.effectiveStatus === 'running' && !s.pauseRequested && s.source === 'cli');
   const detail = detailText(s);
   ui.bubbleSub.replaceChildren(document.createTextNode(detail));
   if (others > 0) ui.bubbleSub.appendChild(el('span', 'bubble-more', t('bubble.more', { n: others })));
   ui.bubbleSub.hidden = !ui.bubbleSub.textContent;
+  ui.bubbleActions.hidden = !perm;
+  if (perm) ui.bubbleActions.replaceChildren(permissionButtons(perm, 'perm-row'));
+  const progress = s.todoProgress && s.effectiveStatus !== 'idle' ? s.todoProgress : null;
+  ui.bubbleProgress.hidden = !progress;
+  if (progress) ui.bubbleProgressFill.style.width = `${(progress.done / progress.total) * 100}%`;
+}
+
+function moodIcon() {
+  const m = state.modes || {};
+  if (m.away) return ['💤', t('mode.away')];
+  if (m.dnd) return ['🔕', t('mode.dnd')];
+  if (m.focus) return ['🍅', t('mode.focus')];
+  if (state.mood.tired) return ['🔋', ''];
+  if (state.mood.night && state.config.greetings) return ['🌙', ''];
+  return ['', ''];
+}
+
+function renderMood() {
+  const [icon, title] = moodIcon();
+  for (const node of [ui.mood, ui.miniMood]) {
+    node.hidden = !icon;
+    node.textContent = icon;
+    node.title = title;
+  }
+  const calm = ['idle', 'ready'].includes(state.aggregate.status) && !state.chat.busy;
+  ui.stage.classList.toggle('sleeping', Boolean(state.modes.away) && calm);
+  ui.stage.classList.toggle('tired', state.mood.tired && !state.modes.away);
+  ui.stage.classList.toggle('sleepy', state.mood.night && state.config.greetings && !state.modes.away && calm);
 }
 
 function renderBadge() {
@@ -232,6 +416,11 @@ function sessionActions(s) {
     });
     actions.appendChild(b);
   };
+  // Claude Code in a terminal on this computer stops at its next tool call
+  if (s.effectiveStatus === 'running' && s.source === 'cli') {
+    if (s.pauseRequested) add(t('ui.cancelPause'), () => api.cancelPause(s.id));
+    else add(t('ui.pause'), () => api.pauseSession(s.id));
+  }
   if (s.unread || s.effectiveStatus === 'failed') add(t('ui.markRead'), () => api.markRead(s.id));
   // cloud sessions and browser chats live on claude.ai, not on this computer
   if (s.url && s.source === 'cloud') add(t('ui.openInApp'), () => api.openUrl(s.url, true));
@@ -252,6 +441,65 @@ function sessionActions(s) {
   });
   add(t('ui.dismiss'), () => api.dismiss(s.id));
   return actions;
+}
+
+/** Working time, Claude's to-do progress and changed files, under the title. */
+function sessionMeta(s) {
+  const meta = el('div', 'session-meta');
+  if (isWorking(s)) {
+    const clock = el('span', 'chip', PetTime.formatClock(Date.now() - s.turnStartedAt));
+    clock.dataset.since = String(s.turnStartedAt);
+    meta.appendChild(clock);
+  } else if (s.lastDuration != null) {
+    meta.appendChild(el('span', 'chip', t('ui.took', { time: PetTime.formatSpan(s.lastDuration, state.config.language) })));
+  }
+  if (s.todoProgress) {
+    const p = s.todoProgress;
+    const chip = el('span', 'chip todo-chip', t('ui.todoProgress', { done: p.done, total: p.total }));
+    const bar = el('span', 'mini-bar');
+    const fill = el('span', 'mini-bar-fill');
+    fill.style.width = `${(p.done / p.total) * 100}%`;
+    bar.appendChild(fill);
+    chip.appendChild(bar);
+    meta.appendChild(chip);
+  }
+  if (s.files && s.files.length) meta.appendChild(el('span', 'chip', `📝 ${s.files.length}`));
+  return meta.children.length ? meta : null;
+}
+
+function todoList(s) {
+  const box = el('div', 'session-section');
+  box.appendChild(el('div', 'section-title', `${t('ui.todos')} · ${s.todoProgress.done}/${s.todoProgress.total}`));
+  const list = el('ul', 'todo-list');
+  for (const todo of s.todos) {
+    const item = el('li', `todo status-${todo.status}`);
+    item.appendChild(el('span', 'todo-mark', todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '▶' : '○'));
+    item.appendChild(el('span', 'todo-text', todo.status === 'in_progress' && todo.active ? todo.active : todo.text));
+    list.appendChild(item);
+  }
+  box.appendChild(list);
+  return box;
+}
+
+function fileList(s) {
+  const box = el('div', 'session-section');
+  box.appendChild(el('div', 'section-title', t('ui.files', { n: s.files.length })));
+  const list = el('ul', 'file-list');
+  for (const file of s.files) {
+    const item = el('li', 'file');
+    const open = button('', () => api.openFile(s.id, file), 'file-open');
+    open.title = file;
+    open.appendChild(el('span', 'file-name', basename(file)));
+    const dir = dirname(file);
+    if (dir) open.appendChild(el('span', 'file-dir', dir));
+    item.appendChild(open);
+    const reveal = button('📂', () => api.openFile(s.id, file, true), 'icon-button small');
+    reveal.title = t('ui.revealFile');
+    item.appendChild(reveal);
+    list.appendChild(item);
+  }
+  box.appendChild(list);
+  return box;
 }
 
 function renderSessions() {
@@ -281,6 +529,8 @@ function renderSessions() {
     name.appendChild(el('span', 'name', `${SOURCE_MARK[s.source] || ''}${sessionName(s)}`));
     name.appendChild(el('span', 'session-time', timeAgo(s.updatedAt)));
     main.appendChild(name);
+    const meta = sessionMeta(s);
+    if (meta) main.appendChild(meta);
     row.title = s.project ? `${sessionName(s)}\n${s.project}` : sessionName(s);
     row.appendChild(main);
     const toggle = () => {
@@ -306,10 +556,15 @@ function renderSessions() {
     });
     item.appendChild(more);
 
+    // 許可 / 拒否 right in the list, without opening the row
+    const perm = s.effectiveStatus === 'waiting' ? pendingPermission(s.id) : null;
+    if (perm && !expanded) item.appendChild(permissionButtons(perm, 'perm-row in-list'));
+
     if (expanded) {
       const body = el('div', 'session-body');
       const detail = detailText(s);
       body.appendChild(el('div', 'session-detail', detail ? `${activityText(s)} — ${detail}` : activityText(s)));
+      if (perm) body.appendChild(permissionBox(perm));
       if (s.prompt) {
         const box = el('div', 'session-text');
         box.appendChild(el('span', 'who', t('ui.you')));
@@ -323,6 +578,8 @@ function renderSessions() {
         box.appendChild(markdown(el('div', 'md'), reply));
         body.appendChild(box);
       }
+      if (s.todos && s.todos.length) body.appendChild(todoList(s));
+      if (s.files && s.files.length) body.appendChild(fileList(s));
       body.appendChild(sessionActions(s));
       item.appendChild(body);
     }
@@ -332,7 +589,11 @@ function renderSessions() {
 }
 
 function markdown(node, text) {
-  return PetMarkdown.render(node, text, { onLink: (url) => api.openLink(url) });
+  return PetMarkdown.render(node, text, {
+    onLink: (url) => api.openLink(url),
+    onCopy: (code) => api.copy(code),
+    labels: { copy: t('ui.copyCode'), copied: t('ui.copied') },
+  });
 }
 
 function renderChat() {
@@ -349,6 +610,9 @@ function renderChat() {
     log.appendChild(bubble);
   }
   if (!state.chat.messages.length) log.appendChild(el('p', 'empty', placeholder(state.chat.target)));
+  // `claude -p` asks through the same hook, so its permission prompts can be answered here
+  const perm = state.chat.sessionId ? pendingPermission(state.chat.sessionId) : null;
+  if (perm) log.appendChild(permissionBox(perm));
   log.scrollTop = log.scrollHeight;
   ui.chatStop.hidden = !state.chat.busy;
   $('chat-terminal').disabled = state.chat.busy;
@@ -356,16 +620,20 @@ function renderChat() {
   $('chat-app').title = t('ui.openInApp');
   $('chat-terminal').title = t('ui.openTerminal');
   $('chat-copy').disabled = !state.chat.messages.some((m) => m.role === 'assistant' && m.text);
+  $('chat-memo').disabled = !state.chat.messages.some((m) => m.role === 'assistant' && m.text && !m.pending && !m.note);
 }
 
 function renderPanel() {
   ui.panel.hidden = !state.panelOpen;
+  ui.timerDot.hidden = !PetTools.busy();
   if (!state.panelOpen) return;
   for (const tab of document.querySelectorAll('.tab')) tab.classList.toggle('active', tab.dataset.tab === state.tab);
   ui.tabSessions.hidden = state.tab !== 'sessions';
   ui.tabChat.hidden = state.tab !== 'chat';
+  ui.tabTools.hidden = !TOOL_TABS.has(state.tab);
   if (state.tab === 'sessions') renderSessions();
-  else renderChat();
+  else if (state.tab === 'chat') renderChat();
+  else PetTools.render(state.tab, ui.tabTools);
 }
 
 /** What the input says, including which model answers. */
@@ -409,7 +677,8 @@ function renderComposer() {
   ui.composerCwd.hidden = target === 'chat'; // a normal chat has no folder
   ui.composerTarget.value = target;
   ui.composerTarget.hidden = state.cloning;
-  ui.composerInput.placeholder = state.cloning ? t('ui.clonePlaceholder') : placeholder(target);
+  const shot = state.attachments.some((f) => state.screenshots.has(f));
+  ui.composerInput.placeholder = state.cloning ? t('ui.clonePlaceholder') : shot ? t('ui.askAboutShot') : placeholder(target);
   ui.composerSend.disabled = state.chat.busy;
   renderRepos();
   const notice = $('composer-notice');
@@ -421,6 +690,7 @@ function renderComposer() {
 function render() {
   renderMini();
   renderBadge();
+  renderMood();
   renderBubble();
   renderPanel();
   renderComposer();
@@ -490,6 +760,16 @@ async function continueInChat(id) {
 async function openInApp(id, cwd) {
   const res = await api.openDesktop(id, cwd);
   if (!res.ok) showToast(t('ui.appFailed'), res.error);
+}
+
+/** Put a memo into the quick chat input, ready to edit and send (in the memo's folder). */
+function sendToChat(text, cwd) {
+  if (cwd && state.chat.target === 'local' && !state.chat.busy && cwd !== (state.chat.cwd || state.config.quickChatCwd)) {
+    setFolder(cwd);
+  }
+  ui.composerInput.value = text;
+  openPanel('chat');
+  openComposer();
 }
 
 function newChat() {
@@ -606,13 +886,15 @@ async function sendQuick() {
   const files = state.attachments.slice();
   // files on this computer can only go to Claude Code running here
   if (files.length && state.chat.target !== 'local') return showToast(t('ui.filesLocalOnly'));
-  const prompt = ui.composerInput.value.trim() || (files.length ? t('ui.lookAtFiles') : '');
+  const shot = files.some((f) => state.screenshots.has(f));
+  const prompt = ui.composerInput.value.trim() || (shot ? t('ui.defaultShotPrompt') : files.length ? t('ui.lookAtFiles') : '');
   if (!prompt || state.chat.busy) return;
   // a conversation that is working elsewhere (a terminal, the app) can be read but not answered here
   const live = state.sessions.find((s) => s.id === state.chat.sessionId && s.source !== 'quickchat');
   if (live && (live.effectiveStatus === 'running' || live.effectiveStatus === 'waiting')) return showToast(t('ui.busyElsewhere'));
   ui.composerInput.value = '';
   state.attachments = [];
+  state.screenshots.clear();
   const chat = state.chat;
   chat.messages.push({ role: 'user', text: prompt, files: files.map(basename) });
   if (chat.target === 'chat') {
@@ -718,6 +1000,162 @@ function handleQuickEvent(ev) {
   render();
 }
 
+// ------------------------------------------------------------------ live clocks
+
+function tick() {
+  const now = Date.now();
+  for (const node of document.querySelectorAll('[data-since]')) {
+    const text = PetTime.formatClock(now - Number(node.dataset.since));
+    if (node.textContent !== text) node.textContent = text;
+  }
+  for (const node of document.querySelectorAll('[data-expires]')) {
+    node.textContent = t('perm.remaining', { n: Math.max(0, Math.ceil((Number(node.dataset.expires) - now) / 1000)) });
+  }
+  if (state.panelOpen && state.tab === 'timer') PetTools.tick(now);
+}
+
+// ------------------------------------------------------------------ greetings: time of day, battery, coming back
+
+const greet = { morningDay: null, nightAt: 0, warned10: false };
+
+function storage(key, value) {
+  try {
+    if (value === undefined) return localStorage.getItem(key);
+    localStorage.setItem(key, value);
+  } catch {
+    // storage unavailable
+  }
+  return null;
+}
+
+function checkTimeOfDay() {
+  const now = new Date();
+  const hour = now.getHours();
+  const night = hour >= 23 || hour < 5;
+  if (night !== state.mood.night) {
+    state.mood.night = night;
+    renderMood();
+  }
+  if (!state.config.greetings || state.modes.away || state.modes.dnd || state.config.mini) return;
+  const day = now.toDateString();
+  if (greet.morningDay == null) greet.morningDay = storage('pet.morningDay');
+  if (hour >= 5 && hour < 11 && greet.morningDay !== day) {
+    greet.morningDay = day;
+    storage('pet.morningDay', day);
+    say(t('say.morning'), { duration: 7000 });
+    playOnce('waving', 2);
+  } else if (night && Date.now() - greet.nightAt > 60 * 60e3) {
+    greet.nightAt = Date.now();
+    say(t('say.night'), { duration: 9000 });
+  }
+}
+
+async function watchBattery() {
+  if (!navigator.getBattery) return;
+  let battery;
+  try {
+    battery = await navigator.getBattery();
+  } catch {
+    return;
+  }
+  const update = () => {
+    const level = Math.round(battery.level * 100);
+    const low = !battery.charging && level <= 20;
+    if (low && !state.mood.tired) {
+      state.mood.tired = true;
+      if (state.config.greetings) say(t('say.batteryLow', { level }), { duration: 9000 });
+    } else if (low && level <= 10 && !greet.warned10) {
+      greet.warned10 = true;
+      if (state.config.greetings) say(t('say.batteryLow', { level }), { duration: 9000 });
+    } else if (!low && state.mood.tired) {
+      state.mood.tired = false;
+      greet.warned10 = false;
+      if (battery.charging && state.config.greetings) say(t('say.charging'), { duration: 5000 });
+    }
+    renderMood();
+  };
+  battery.addEventListener('levelchange', update);
+  battery.addEventListener('chargingchange', update);
+  update();
+}
+
+/** What happened while you were away, focusing, or in おやすみモード. */
+function handleDigest(d) {
+  const summary = digestSummary(d.counts);
+  if (d.reason === 'away') {
+    if (!summary && !state.config.greetings) return;
+    const text = summary ? t('say.awaySummary', { summary }) : d.cause === 'sleep' ? t('say.resume') : t('say.welcomeBack');
+    say(text, { duration: summary ? 14000 : 6000 });
+    playOnce('waving', 2);
+    setTimeout(checkTimeOfDay, 7000); // good morning comes after "welcome back"
+  } else if (summary) {
+    say(t(d.reason === 'focus' ? 'say.focusSummary' : 'say.dndSummary', { summary }), { duration: 12000 });
+  }
+}
+
+function handleAlarm(a) {
+  if (a.kind === 'timer') {
+    say(a.label ? t('timer.doneLabel', { label: a.label }) : t('timer.done'), { sticky: true });
+    playOnce('jumping', 4);
+    beep(3);
+  } else if (a.kind === 'pomodoro') {
+    if (a.to === 'focus') say(t('pomo.focusStart', { min: a.minutes }), { duration: 7000 });
+    else if (a.to) say(t('pomo.breakStart', { min: a.minutes }), { duration: 10000 });
+    else say(t('pomo.finished'), { duration: 4000 });
+    if (a.from) {
+      playOnce(a.to === 'focus' ? 'waving' : 'jumping', 2);
+      beep(a.to === 'focus' ? 1 : 2);
+    }
+  } else if (a.kind === 'calendar') {
+    say(t('cal.reminder', { min: a.minutes, title: a.title || t('cal.untitled') }), { duration: 30000 });
+    playOnce('waving', 3);
+    beep(1);
+  }
+}
+
+// ------------------------------------------------------------------ drag & drop: feed the pet
+
+function setupDrop() {
+  let depth = 0;
+  const hasPayload = (e) =>
+    [...(e.dataTransfer ? e.dataTransfer.types : [])].some((type) => type === 'Files' || type === 'text/plain');
+  const highlight = (on) => {
+    ui.stage.classList.toggle('drop-target', on);
+    ui.mini.classList.toggle('drop-target', on);
+  };
+  document.addEventListener('dragenter', (e) => {
+    if (!hasPayload(e)) return;
+    e.preventDefault();
+    depth += 1;
+    highlight(true);
+  });
+  document.addEventListener('dragover', (e) => {
+    if (!hasPayload(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  document.addEventListener('dragleave', () => {
+    depth = Math.max(0, depth - 1);
+    if (!depth) highlight(false);
+  });
+  document.addEventListener('drop', (e) => {
+    depth = 0;
+    highlight(false);
+    // the input has its own drop handling (files are attached, text is typed)
+    if (ui.composer.contains(e.target) || e.defaultPrevented) return;
+    e.preventDefault();
+    const files = [...(e.dataTransfer.files || [])].map((f) => api.pathForFile(f)).filter(Boolean);
+    const text = files.length ? '' : (e.dataTransfer.getData('text/plain') || '').trim();
+    if (!files.length && !text) return;
+    if (text) ui.composerInput.value = ui.composerInput.value ? `${ui.composerInput.value}\n\n${text}` : text;
+    if (!state.config.mini) playOnce('jumping', 1);
+    openPanel('chat');
+    openComposer();
+    if (files.length) addAttachments(files);
+    say(t('say.fed'), { duration: 3000 });
+  });
+}
+
 // ------------------------------------------------------------------ pointer: click vs drag
 
 function setupPointer(target) {
@@ -767,6 +1205,7 @@ function setupPointer(target) {
       playStatus();
       return;
     }
+    if (state.toast && state.toast.sticky) return void dismissToast();
     if (!state.config.mini) playOnce('waving', 2);
     togglePanel();
   };
@@ -783,7 +1222,16 @@ function setupPointer(target) {
 function setupControls() {
   setupPointer(ui.stage);
   setupPointer(ui.mini);
-  ui.bubble.addEventListener('click', () => openPanel('sessions'));
+  setupDrop();
+  // a click on what the pet says puts it away; on a session it opens the list
+  ui.bubble.addEventListener('click', () => {
+    if (!ui.bubble.classList.contains('toast') || !dismissToast()) openPanel('sessions');
+  });
+  ui.bubblePause.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const s = state.aggregate.primary;
+    if (s) api.pauseSession(s.id);
+  });
   ui.bubble.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     api.contextMenu();
@@ -805,6 +1253,16 @@ function setupControls() {
     if (reply) api.copy(reply.text);
     e.currentTarget.textContent = t('ui.copied');
     setTimeout(() => applyI18n(), 1200);
+  });
+  $('chat-memo').addEventListener('click', async (e) => {
+    const reply = lastAssistant();
+    if (!reply || !reply.text) return;
+    const target = e.currentTarget;
+    const res = await api.memo({ action: 'add', text: reply.text, cwd: state.chat.cwd || null });
+    if (res && res.ok) {
+      target.textContent = '✓';
+      setTimeout(() => applyI18n(), 1200);
+    }
   });
   $('chat-app').addEventListener('click', () => {
     if (state.chat.url)
@@ -872,7 +1330,8 @@ function setupControls() {
 
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    if (state.cloning) {
+    if (state.toast && state.toast.sticky) dismissToast();
+    else if (state.cloning) {
       state.cloning = false;
       ui.composerInput.value = '';
       render();
@@ -883,11 +1342,15 @@ function setupControls() {
   setInterval(() => {
     if (state.panelOpen && state.tab === 'sessions') renderSessions();
   }, 30000);
+  setInterval(tick, 1000);
+  setInterval(checkTimeOfDay, 60000);
 }
 
-function applyState({ sessions, aggregate }) {
+function applyState({ sessions, aggregate, permissions, modes }) {
   state.sessions = sessions;
   state.aggregate = aggregate;
+  state.permissions = permissions || [];
+  state.modes = modes || { dnd: null, focus: false, away: false };
   if (state.expanded && !sessions.some((s) => s.id === state.expanded)) state.expanded = null;
   playStatus();
   render();
@@ -904,9 +1367,29 @@ function applyConfig(config) {
   render();
 }
 
+/** A timer, memo or calendar update: redraw its tab if it is the one open. */
+function toolsChanged(tab) {
+  if (state.panelOpen && state.tab === tab) renderPanel();
+  else ui.timerDot.hidden = !PetTools.busy();
+  reportSize();
+}
+
 async function boot() {
   const init = await api.init();
   state.hooksInstalled = init.hooksInstalled;
+  PetTools.init({
+    api,
+    t: () => t,
+    language: () => state.config.language,
+    locale,
+    sendToChat,
+    copy: (text) => api.copy(text),
+    rerender: () => renderPanel(),
+    reportSize,
+  });
+  PetTools.setTimers(init.timers);
+  PetTools.setMemos(init.memos);
+  PetTools.setCalendar(init.calendar);
   applyConfig(init.config);
   state.pet = init.pet;
   sprite.setPet(init.pet, init.config.scale);
@@ -924,8 +1407,8 @@ async function boot() {
     if (pet.announce) showToast(pet.displayName, t('toast.arrived'));
     render();
   });
-  api.on('transition', ({ to, session }) => {
-    if (to === 'ready' && session.source !== 'quickchat') playOnce('jumping', 2);
+  api.on('transition', ({ to, session, held: quiet }) => {
+    if (to === 'ready' && session.source !== 'quickchat' && !quiet) playOnce('jumping', 2);
   });
   api.on('command', (cmd) => {
     if (cmd.type === 'panel') openPanel(cmd.tab);
@@ -935,7 +1418,31 @@ async function boot() {
     }
   });
   api.on('quick-event', handleQuickEvent);
+  api.on('timers', (snapshot) => {
+    PetTools.setTimers(snapshot);
+    toolsChanged('timer');
+  });
+  api.on('memos', (list) => {
+    PetTools.setMemos(list);
+    toolsChanged('memo');
+  });
+  api.on('calendar', (snapshot) => {
+    PetTools.setCalendar(snapshot);
+    toolsChanged('calendar');
+  });
+  api.on('alarm', handleAlarm);
+  api.on('digest', handleDigest);
+  api.on('say', ({ text }) => say(text, { duration: 9000 }));
+  // a screenshot to ask about
+  api.on('attach', ({ files, kind }) => {
+    for (const f of files || []) if (kind === 'screenshot') state.screenshots.add(f);
+    openPanel('chat');
+    openComposer();
+    addAttachments(files || []);
+  });
   playOnce('waving', 2);
+  checkTimeOfDay();
+  watchBattery();
 }
 
 boot();

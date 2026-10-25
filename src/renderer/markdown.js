@@ -68,8 +68,31 @@
       .map((c) => c.trim());
   }
 
+  /** A code block, with a copy button when the caller can copy. */
+  function codeBlock(text, onCopy, labels = {}) {
+    const pre = document.createElement('pre');
+    const code = document.createElement('code');
+    code.textContent = text;
+    pre.appendChild(code);
+    if (!onCopy) return pre;
+    const wrap = document.createElement('div');
+    wrap.className = 'md-code';
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'md-code-copy';
+    copy.textContent = labels.copy || 'Copy';
+    copy.addEventListener('click', (e) => {
+      e.stopPropagation();
+      onCopy(text);
+      copy.textContent = labels.copied || '✓';
+      setTimeout(() => (copy.textContent = labels.copy || 'Copy'), 1200);
+    });
+    wrap.append(pre, copy);
+    return wrap;
+  }
+
   /** Render Markdown text into a container element (its children are replaced). */
-  function render(container, source, { onLink } = {}) {
+  function render(container, source, { onLink, onCopy, labels } = {}) {
     container.replaceChildren();
     const lines = String(source || '')
       .replace(/\r\n?/g, '\n')
@@ -89,11 +112,7 @@
         i++;
         while (i < lines.length && !lines[i].trim().startsWith(fence[1])) code.push(lines[i++]);
         i++;
-        const pre = el('pre');
-        const c = el('code');
-        c.textContent = code.join('\n');
-        pre.appendChild(c);
-        container.appendChild(pre);
+        container.appendChild(codeBlock(code.join('\n'), onCopy, labels));
         continue;
       }
       if (!line.trim()) {
@@ -117,7 +136,7 @@
         const quote = [];
         while (i < lines.length && /^\s*>/.test(lines[i])) quote.push(lines[i++].replace(/^\s*>\s?/, ''));
         const q = el('blockquote');
-        render(q, quote.join('\n'), { onLink });
+        render(q, quote.join('\n'), { onLink, onCopy, labels });
         container.appendChild(q);
         continue;
       }
