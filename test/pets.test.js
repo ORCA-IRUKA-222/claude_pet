@@ -12,7 +12,7 @@ process.env.CODEX_HOME = tempDir();
 const atlas = require('../src/shared/atlas');
 const { encodePNG, readImageSize } = require('../src/shared/png');
 const { listPets, findPet, createImagePet, loadPet } = require('../src/core/pets');
-const { buildPet } = require('../tools/build-pet');
+const { buildPet, buildPets } = require('../tools/build-pet');
 
 function writePNG(file, width, height) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -92,4 +92,52 @@ test('the committed Mochi spritesheet matches its design', () => {
   const fresh = fs.readFileSync(path.join(out, 'spritesheet.png'));
   const committed = fs.readFileSync(path.join(__dirname, '..', 'pets', 'mochi', 'spritesheet.png'));
   assert.ok(fresh.equals(committed), 'run `npm run build:pet` after editing tools/designs/mochi.js');
+});
+
+test('a characters file builds one pet per character with its group', () => {
+  const dir = tempDir();
+  const file = path.join(dir, 'team.characters.js');
+  fs.writeFileSync(
+    file,
+    `module.exports = { template: 'chibi', group: 'Sample Team', characters: [
+      { id: 'sample-a', displayName: 'A', hair: { style: 'twintails', color: '#4a7bd0' }, outfit: '#ff9a3c' },
+      { id: 'sample-b', displayName: 'B', hair: { style: 'long', color: '#2b2b33', wavy: true }, accessories: ['glasses', 'ribbons'] },
+    ] };`,
+  );
+  const results = buildPets(file, { outDir: path.join(dir, 'out') });
+  assert.deepEqual(
+    results.map((r) => r.manifest.id),
+    ['sample-a', 'sample-b'],
+  );
+  for (const r of results) {
+    assert.deepEqual(r.problems, []);
+    assert.equal(r.manifest.group, 'Sample Team');
+    assert.ok(fs.existsSync(path.join(dir, 'out', r.manifest.id, 'spritesheet.png')));
+  }
+});
+
+test('illustration pets keep their display height and per-state pictures', () => {
+  const dir = tempDir();
+  const main = path.join(dir, 'smile.png');
+  const grin = path.join(dir, 'grin.png');
+  writePNG(main, 300, 400);
+  writePNG(grin, 320, 400);
+  const pet = createImagePet(main, {
+    id: 'illust-test',
+    name: 'テスト',
+    group: 'Sample Team',
+    height: 320,
+    states: { ready: grin },
+  });
+  assert.equal(pet.id, 'illust-test');
+  assert.equal(pet.displayName, 'テスト');
+  assert.equal(pet.group, 'Sample Team');
+  assert.equal(pet.displayHeight, 320);
+  assert.deepEqual(Object.keys(pet.states), ['ready']);
+  assert.equal(pet.states.ready.width, 320);
+  const manifest = JSON.parse(fs.readFileSync(path.join(pet.dir, 'pet.json'), 'utf8'));
+  assert.deepEqual(manifest.states, { ready: 'state-ready.png' });
+
+  assert.throws(() => createImagePet(main, { states: { dancing: grin } }), /知らない状態/);
+  assert.throws(() => createImagePet(main, { id: 'Bad Id' }), /--id/);
 });

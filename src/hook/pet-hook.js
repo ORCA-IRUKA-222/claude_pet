@@ -67,9 +67,12 @@ function compact(input) {
   switch (input.hook_event_name) {
     case 'SessionStart':
       Object.assign(event, { start_source: input.source, title: clip(input.session_title, 120) });
+      // where Claude Code runs from, so quick chat can find it even when it isn't on PATH
+      event.claude_path = process.env.CLAUDE_CODE_EXECPATH;
       break;
     case 'UserPromptSubmit':
       Object.assign(event, { prompt: clip(input.prompt, 300), title: clip(input.session_title, 120) });
+      event.claude_path = process.env.CLAUDE_CODE_EXECPATH;
       break;
     case 'UserPromptExpansion':
       event.command_name = input.command_name;

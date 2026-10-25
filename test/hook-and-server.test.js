@@ -119,3 +119,38 @@ test('server refuses to start twice on the same port', async () => {
     server.close();
   }
 });
+
+test('the hook tells the pet where Claude Code runs from', () => {
+  const saved = process.env.CLAUDE_CODE_EXECPATH;
+  process.env.CLAUDE_CODE_EXECPATH = '/opt/claude-code/bin/claude';
+  try {
+    assert.equal(compact({ hook_event_name: 'SessionStart', session_id: 'abc' }).claude_path, '/opt/claude-code/bin/claude');
+    assert.equal(compact({ hook_event_name: 'PreToolUse', session_id: 'abc' }).claude_path, undefined);
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_CODE_EXECPATH;
+    else process.env.CLAUDE_CODE_EXECPATH = saved;
+  }
+});
+
+test('the browser extension may report events but not control the pet', async () => {
+  const port = await freePort();
+  const received = [];
+  const controls = [];
+  const server = await startServer({
+    port,
+    onEvent: (e, meta) => received.push({ e, meta }),
+    onControl: async (c) => controls.push(c),
+    getStatus: () => ({}),
+  });
+  const headers = { 'content-type': 'application/json', origin: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop' };
+  try {
+    const body = JSON.stringify({ event: 'Stop', session_id: 'claude-ai-1' });
+    assert.equal(await rawRequest(port, { headers, body }), 204);
+    assert.deepEqual(received[0].meta, { fromExtension: true });
+    assert.equal(await rawRequest(port, { headers, path: '/control', body: JSON.stringify({ action: 'quit' }) }), 403);
+    assert.equal(await rawRequest(port, { headers, method: 'GET', path: '/status' }), 403);
+    assert.equal(controls.length, 0);
+  } finally {
+    server.close();
+  }
+});

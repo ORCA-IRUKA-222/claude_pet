@@ -27,6 +27,7 @@ const ui = {
   composer: $('composer'),
   composerInput: $('composer-input'),
   composerCwd: $('composer-cwd'),
+  composerTarget: $('composer-target'),
   composerSend: $('composer-send'),
 };
 
@@ -42,11 +43,18 @@ const state = {
   tab: 'sessions',
   expanded: null,
   composerOpen: false,
-  chat: { messages: [], sessionId: null, cwd: '', busy: false },
+  // target: local (Claude Code here), cloud (a cloud session: cloudId, url) or chat (a new chat in the app)
+  chat: { messages: [], sessionId: null, cwd: '', busy: false, target: 'local', cloudId: null, url: null },
+  cloning: false, // the composer asks for a GitHub repository instead of a message
+  repos: { loading: false, list: [], index: 0 }, // your GitHub repositories, to pick one while cloning
+  attachments: [], // files going with the next message (paths on this computer)
   temporary: null, // a one-off animation (wave, jump) that overrides the status animation
+  toast: null, // { title, sub } shown in the bubble for a few seconds, e.g. when the pet changes
 };
 
 let t = PetI18n.translator('ja');
+const SOURCE_MARK = { quickchat: '💬 ', cloud: '☁ ', browser: '🌐 ' };
+const AUTH_ERROR = /authenticat|oauth|\/login|api key/i;
 
 // ------------------------------------------------------------------ helpers
 
@@ -78,11 +86,14 @@ function timeAgo(ms) {
   const minutes = Math.floor((Date.now() - ms) / 60000);
   if (minutes < 1) return t('ui.justNow');
   if (minutes < 60) return t('ui.minutesAgo', { n: minutes });
-  return t('ui.hoursAgo', { n: Math.floor(minutes / 60) });
+  if (minutes < 24 * 60) return t('ui.hoursAgo', { n: Math.floor(minutes / 60) });
+  return t('ui.daysAgo', { n: Math.floor(minutes / (24 * 60)) });
 }
 
 function sessionName(s) {
-  return s.title || s.project || s.id.slice(0, 8);
+  // without a title, the first question says what the conversation is about
+  const asked = s.firstPrompt || s.prompt;
+  return s.title || (asked && asked.replace(/\s+/g, ' ').slice(0, 60)) || s.project || s.id.slice(0, 8);
 }
 
 function activityText(s) {
@@ -130,7 +141,7 @@ function statusAnimation() {
 
 function playStatus() {
   if (state.temporary) return;
-  sprite.play(statusAnimation());
+  sprite.play(statusAnimation(), { status: state.aggregate.status });
 }
 
 function playOnce(name, loops = 1) {
@@ -144,19 +155,38 @@ function playOnce(name, loops = 1) {
   });
 }
 
+let toastTimer = 0;
+function showToast(title, sub, ms = 6000) {
+  clearTimeout(toastTimer);
+  state.toast = { title, sub };
+  toastTimer = setTimeout(() => {
+    state.toast = null;
+    render();
+  }, ms);
+  render();
+}
+
 // ------------------------------------------------------------------ rendering
 
 function applyI18n() {
   document.documentElement.lang = state.config.language;
   for (const node of document.querySelectorAll('[data-i18n]')) node.textContent = t(node.dataset.i18n);
-  ui.composerInput.placeholder = t('ui.quickPlaceholder');
-  ui.composerCwd.title = t('ui.cwd');
 }
 
 function renderBubble() {
   const agg = state.aggregate;
   const s = agg.primary;
-  const show = state.config.showBubble && !state.config.mini && !state.panelOpen && s && agg.status !== 'idle';
+  const visible = state.config.showBubble && !state.config.mini && !state.panelOpen;
+  // a message for you shows even with the list open (in the input when that is open)
+  if (state.toast && !state.composerOpen && !state.config.mini) {
+    ui.bubble.hidden = false;
+    ui.bubble.className = 'bubble status-idle toast';
+    ui.bubbleTitle.textContent = state.toast.title;
+    ui.bubbleSub.replaceChildren(document.createTextNode(state.toast.sub));
+    ui.bubbleSub.hidden = false;
+    return;
+  }
+  const show = visible && s && agg.status !== 'idle';
   ui.bubble.hidden = !show;
   if (!show) return;
   ui.bubble.className = `bubble status-${agg.status}`;
@@ -203,12 +233,19 @@ function sessionActions(s) {
     actions.appendChild(b);
   };
   if (s.unread || s.effectiveStatus === 'failed') add(t('ui.markRead'), () => api.markRead(s.id));
-  add(t('ui.openTerminal'), async (b) => {
-    b.disabled = true;
-    const res = await api.openTerminal(s.id, s.cwd);
-    b.disabled = false;
-    if (!res.ok) b.textContent = res.error;
-  });
+  // cloud sessions and browser chats live on claude.ai, not on this computer
+  if (s.url && s.source === 'cloud') add(t('ui.openInApp'), () => api.openUrl(s.url, true));
+  if (s.url) add(t('ui.openInBrowser'), () => api.openUrl(s.url));
+  else if (s.source !== 'cloud' && s.source !== 'browser') {
+    add(t('ui.continueHere'), () => continueInChat(s.id));
+    add(t('ui.openInApp'), () => openInApp(s.id, s.cwd));
+    add(t('ui.openTerminal'), async (b) => {
+      b.disabled = true;
+      const res = await api.openTerminal(s.id, s.cwd);
+      b.disabled = false;
+      if (!res.ok) b.textContent = res.error;
+    });
+  }
   add(t('ui.copy'), (b) => {
     api.copy(s.message || s.detail || '');
     b.textContent = t('ui.copied');
@@ -220,7 +257,8 @@ function sessionActions(s) {
 function renderSessions() {
   const list = ui.sessionList;
   list.replaceChildren();
-  const sessions = state.sessions;
+  // newest first, like a chat history
+  const sessions = [...state.sessions].sort((a, b) => b.updatedAt - a.updatedAt);
   ui.sessionsEmpty.hidden = sessions.length > 0;
   ui.setupHint.hidden = state.hooksInstalled;
 
@@ -240,21 +278,38 @@ function renderSessions() {
     row.appendChild(el('span', 'dot'));
     const main = el('div', 'session-main');
     const name = el('div', 'session-name');
-    name.appendChild(el('span', 'name', `${s.source === 'quickchat' ? '💬 ' : ''}${sessionName(s)}`));
+    name.appendChild(el('span', 'name', `${SOURCE_MARK[s.source] || ''}${sessionName(s)}`));
     name.appendChild(el('span', 'session-time', timeAgo(s.updatedAt)));
     main.appendChild(name);
-    const detail = detailText(s);
-    main.appendChild(el('div', 'session-detail', detail ? `${activityText(s)} — ${detail}` : activityText(s)));
+    row.title = s.project ? `${sessionName(s)}\n${s.project}` : sessionName(s);
     row.appendChild(main);
-    row.addEventListener('click', () => {
+    const toggle = () => {
       state.expanded = expanded ? null : s.id;
       if (!expanded && s.effectiveStatus === 'ready') api.markRead(s.id);
       renderPanel();
+    };
+    // a conversation on this computer opens in full here; a cloud session opens in the Claude
+    // app and a browser chat in the browser; a cloud row without a link only has its summary
+    row.addEventListener('click', () => {
+      if (s.effectiveStatus === 'ready') api.markRead(s.id);
+      if (s.source === 'browser') return s.url ? api.openUrl(s.url) : toggle();
+      if (s.source === 'cloud' && !s.url) return toggle(); // e.g. the relay test: nothing to open
+      continueInChat(s.id);
     });
     item.appendChild(row);
+    const more = el('button', 'icon-button session-more', expanded ? '▴' : '⋯');
+    more.type = 'button';
+    more.title = t('ui.moreActions');
+    more.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggle();
+    });
+    item.appendChild(more);
 
     if (expanded) {
       const body = el('div', 'session-body');
+      const detail = detailText(s);
+      body.appendChild(el('div', 'session-detail', detail ? `${activityText(s)} — ${detail}` : activityText(s)));
       if (s.prompt) {
         const box = el('div', 'session-text');
         box.appendChild(el('span', 'who', t('ui.you')));
@@ -265,7 +320,7 @@ function renderSessions() {
       if (reply) {
         const box = el('div', 'session-text');
         box.appendChild(el('span', 'who', t('ui.claude')));
-        box.appendChild(document.createTextNode(reply));
+        box.appendChild(markdown(el('div', 'md'), reply));
         body.appendChild(box);
       }
       body.appendChild(sessionActions(s));
@@ -276,21 +331,30 @@ function renderSessions() {
   }
 }
 
+function markdown(node, text) {
+  return PetMarkdown.render(node, text, { onLink: (url) => api.openLink(url) });
+}
+
 function renderChat() {
   const log = ui.chatLog;
   log.replaceChildren();
   for (const m of state.chat.messages) {
     const bubble = el('div', `msg ${m.role}${m.pending ? ' pending' : ''}${m.error ? ' error' : ''}`);
-    const text = el('span', 'text', m.text);
+    // Claude's replies are Markdown; what you wrote stays as typed
+    const text = m.role === 'assistant' && !m.error ? markdown(el('div', 'text md'), m.text) : el('span', 'text', m.text);
     text.dataset.placeholder = t('ui.waitingAnswer');
     bubble.appendChild(text);
-    if (m.pending && m.tool) bubble.appendChild(el('span', 'tool', `🔧 ${m.tool}`));
+    if (m.files && m.files.length) bubble.appendChild(el('div', 'msg-files', m.files.map((f) => `📎 ${f}`).join('\n')));
+    if (m.pending && m.tool) bubble.appendChild(el('span', 'tool', `${state.chat.target === 'cloud' ? '☁' : '🔧'} ${m.tool}`));
     log.appendChild(bubble);
   }
-  if (!state.chat.messages.length) log.appendChild(el('p', 'empty', t('ui.quickPlaceholder')));
+  if (!state.chat.messages.length) log.appendChild(el('p', 'empty', placeholder(state.chat.target)));
   log.scrollTop = log.scrollHeight;
   ui.chatStop.hidden = !state.chat.busy;
-  $('chat-terminal').disabled = !state.chat.sessionId || state.chat.busy;
+  $('chat-terminal').disabled = state.chat.busy;
+  $('chat-app').disabled = !(state.chat.sessionId || state.chat.url) || state.chat.busy;
+  $('chat-app').title = t('ui.openInApp');
+  $('chat-terminal').title = t('ui.openTerminal');
   $('chat-copy').disabled = !state.chat.messages.some((m) => m.role === 'assistant' && m.text);
 }
 
@@ -304,12 +368,54 @@ function renderPanel() {
   else renderChat();
 }
 
+/** What the input says, including which model answers. */
+function placeholder(target) {
+  const { quickChatModel: model = '', quickChatEffort: effort = 'xhigh' } = state.config;
+  return t(`ui.placeholder.${target}`, { model, effort: t(`effort.${effort}`) });
+}
+
+function renderAttachments() {
+  const box = $('composer-files');
+  box.replaceChildren();
+  box.hidden = !state.attachments.length;
+  for (const file of state.attachments) {
+    const chip = el('span', 'file-chip', `📎 ${basename(file)}`);
+    chip.title = file;
+    const x = el('button', 'chip-x', '×');
+    x.type = 'button';
+    x.addEventListener('click', () => {
+      state.attachments = state.attachments.filter((f) => f !== file);
+      render();
+    });
+    chip.appendChild(x);
+    box.appendChild(chip);
+  }
+  $('composer-attach').title = t('ui.attach');
+  $('composer-attach').hidden = state.cloning;
+}
+
+function addAttachments(files) {
+  for (const file of files) if (file && !state.attachments.includes(file)) state.attachments.push(file);
+  render();
+}
+
 function renderComposer() {
   ui.composer.hidden = !state.composerOpen;
   if (!state.composerOpen) return;
   const cwd = state.chat.cwd || state.config.quickChatCwd;
+  const target = state.chat.target;
   ui.composerCwd.textContent = `📁 ${cwd === state.config.home ? '~' : basename(cwd)}`;
+  ui.composerCwd.title = `${t('ui.cwd')}: ${cwd}`;
+  ui.composerCwd.hidden = target === 'chat'; // a normal chat has no folder
+  ui.composerTarget.value = target;
+  ui.composerTarget.hidden = state.cloning;
+  ui.composerInput.placeholder = state.cloning ? t('ui.clonePlaceholder') : placeholder(target);
   ui.composerSend.disabled = state.chat.busy;
+  renderRepos();
+  const notice = $('composer-notice');
+  notice.hidden = !state.toast;
+  notice.textContent = state.toast ? [state.toast.title, state.toast.sub].filter(Boolean).join(' — ') : '';
+  renderAttachments();
 }
 
 function render() {
@@ -343,6 +449,8 @@ function openPanel(tab) {
 function closePanel() {
   state.panelOpen = false;
   state.expanded = null;
+  // an empty quick-chat box goes away with the panel
+  if (!state.chat.busy && !ui.composerInput.value.trim()) state.composerOpen = false;
   render();
 }
 
@@ -363,24 +471,169 @@ function closeComposer() {
   render();
 }
 
-function newChat() {
-  if (state.chat.busy) api.quickStop();
-  state.chat = { messages: [], sessionId: null, cwd: state.chat.cwd, busy: false };
+/** Load a past conversation into the quick chat; what you send next continues it. */
+async function continueInChat(id) {
+  if (state.chat.sessionId !== id && state.chat.openedFrom !== id) {
+    if (state.chat.busy) return showToast(t('ui.chatBusy'));
+    const res = await api.openChat(id);
+    if (!res.ok) return showToast(t('ui.chatNotFound'), res.error);
+    const base = { messages: res.messages, busy: false, openedFrom: id };
+    state.chat = res.cloud
+      ? // a cloud session: what you send next goes to it (claude -p --cloud)
+        { ...base, sessionId: null, cwd: state.chat.cwd, target: 'cloud', cloudId: res.cloudId, url: res.url }
+      : { ...base, sessionId: id, cwd: res.cwd || state.chat.cwd, target: 'local', cloudId: null, url: null };
+  }
   openPanel('chat');
   openComposer();
 }
 
-async function sendQuick() {
-  const prompt = ui.composerInput.value.trim();
-  if (!prompt || state.chat.busy) return;
+async function openInApp(id, cwd) {
+  const res = await api.openDesktop(id, cwd);
+  if (!res.ok) showToast(t('ui.appFailed'), res.error);
+}
+
+function newChat() {
+  if (state.chat.busy) api.quickStop();
+  state.chat = {
+    messages: [],
+    sessionId: null,
+    cwd: state.chat.cwd,
+    busy: false,
+    target: state.chat.target,
+    cloudId: null,
+    url: null,
+  };
+  openPanel('chat');
+  openComposer();
+}
+
+function setTarget(target) {
+  api.setQuickTarget(target);
+  if (target === state.chat.target) return;
+  // a conversation stays where it started; switching starts a new one
+  if (state.chat.messages.length) newChat();
+  state.chat.target = target;
+  render();
+  // the cloud needs a repository; offer yours when none is chosen yet
+  const cwd = state.chat.cwd || state.config.quickChatCwd;
+  if (target === 'cloud' && (!cwd || cwd === state.config.home)) chooseWhere();
+}
+
+async function chooseWhere() {
+  const current = state.chat.cwd || state.config.quickChatCwd;
+  // a cloud task works on a GitHub repository: go straight to your repositories
+  const pick = state.chat.target === 'cloud' ? { clone: true } : await api.folderMenu(current);
+  let folder = pick && pick.dir;
+  if (pick && pick.choose) {
+    folder = await api.chooseFolder(current);
+  }
+  if (pick && pick.clone) {
+    state.cloning = true;
+    ui.composerInput.value = '';
+    state.repos = { loading: !state.repos.list.length, list: state.repos.list, index: 0 };
+    render();
+    ui.composerInput.focus();
+    const res = await api.listRepos();
+    state.repos = { loading: false, list: res.ok ? res.repos : [], index: 0 };
+    if (!res.ok) showToast(t('ui.reposFailed'), res.error);
+    render();
+    return;
+  }
+  if (folder) setFolder(folder);
+}
+
+function setFolder(folder) {
+  if (folder !== state.chat.cwd) {
+    // another folder (repository) means another conversation
+    if (state.chat.messages.length) newChat();
+    state.chat.sessionId = null;
+    state.chat.cloudId = null;
+  }
+  state.chat.cwd = folder;
+  render();
+}
+
+/** Your repositories that match what is typed, most recently pushed first. */
+function matchingRepos() {
+  const q = ui.composerInput.value.trim().toLowerCase();
+  return state.repos.list.filter((r) => !q || r.fullName.toLowerCase().includes(q)).slice(0, 8);
+}
+
+function renderRepos() {
+  const box = $('composer-repos');
+  box.replaceChildren();
+  box.hidden = !state.cloning;
+  if (!state.cloning) return;
+  if (state.repos.loading) return box.appendChild(el('div', 'repo-note', t('ui.reposLoading')));
+  const repos = matchingRepos();
+  if (!repos.length && state.repos.list.length) box.appendChild(el('div', 'repo-note', t('ui.reposNone')));
+  repos.forEach((r, i) => {
+    const item = el('button', `repo-item${i === state.repos.index ? ' active' : ''}`);
+    item.type = 'button';
+    item.appendChild(el('span', 'repo-name', `${r.private ? '🔒 ' : ''}${r.fullName}`));
+    if (r.cloned) item.appendChild(el('span', 'repo-badge', t('ui.repoCloned')));
+    if (r.description) item.appendChild(el('span', 'repo-desc', r.description));
+    item.addEventListener('mousedown', (e) => e.preventDefault()); // keep the input focused
+    item.addEventListener('click', () => pickRepo(r.fullName));
+    box.appendChild(item);
+  });
+}
+
+function pickRepo(fullName) {
+  ui.composerInput.value = fullName;
+  cloneFromComposer();
+}
+
+async function cloneFromComposer() {
+  const text = ui.composerInput.value.trim();
+  if (!text) return;
+  ui.composerSend.disabled = true;
+  showToast(t('ui.cloning'), text, 60000);
+  const res = await api.cloneRepo(text);
+  state.toast = null;
+  if (!res.ok) {
+    ui.composerSend.disabled = false;
+    return showToast(t('ui.cloneFailed'), res.error);
+  }
+  state.cloning = false;
   ui.composerInput.value = '';
+  setFolder(res.dir);
+  showToast(t('ui.cloned'), res.dir);
+}
+
+async function sendQuick() {
+  if (state.cloning) return cloneFromComposer();
+  const files = state.attachments.slice();
+  // files on this computer can only go to Claude Code running here
+  if (files.length && state.chat.target !== 'local') return showToast(t('ui.filesLocalOnly'));
+  const prompt = ui.composerInput.value.trim() || (files.length ? t('ui.lookAtFiles') : '');
+  if (!prompt || state.chat.busy) return;
+  // a conversation that is working elsewhere (a terminal, the app) can be read but not answered here
+  const live = state.sessions.find((s) => s.id === state.chat.sessionId && s.source !== 'quickchat');
+  if (live && (live.effectiveStatus === 'running' || live.effectiveStatus === 'waiting')) return showToast(t('ui.busyElsewhere'));
+  ui.composerInput.value = '';
+  state.attachments = [];
   const chat = state.chat;
-  chat.messages.push({ role: 'user', text: prompt });
+  chat.messages.push({ role: 'user', text: prompt, files: files.map(basename) });
+  if (chat.target === 'chat') {
+    // the answer comes in the Claude app (or claude.ai in the browser)
+    const sent = await api.askInApp(prompt);
+    chat.messages.push({ role: 'assistant', text: t(sent.browser ? 'ui.sentToBrowser' : 'ui.sentToApp'), note: true });
+    openPanel('chat');
+    return render();
+  }
   chat.messages.push({ role: 'assistant', text: '', pending: true });
   chat.busy = true;
   openPanel('chat');
   playStatus();
-  const res = await api.quickSend(prompt, chat.cwd || state.config.quickChatCwd, chat.sessionId);
+  const cloud = chat.target === 'cloud';
+  const res = await api.quickSend(
+    prompt,
+    chat.cwd || state.config.quickChatCwd,
+    cloud ? chat.cloudId : chat.sessionId,
+    cloud,
+    files,
+  );
   if (!res.ok) handleQuickEvent({ type: 'error', message: res.error });
   else chat.cwd = res.cwd;
   render();
@@ -403,6 +656,37 @@ function handleQuickEvent(ev) {
     case 'text':
       if (reply) reply.text = reply.text ? `${reply.text}\n\n${ev.text}` : ev.text;
       break;
+    case 'raw': // a cloud run's reply as plain text, line by line
+      if (reply) reply.text = reply.text ? `${reply.text}\n${ev.text}` : ev.text;
+      break;
+    case 'note': // progress of a cloud run
+      if (reply) reply.tool = ev.text;
+      break;
+    case 'cloud-linked': // the cloud session a terminal started for this chat; follow-ups go to it
+      if (chat.target === 'cloud' && !chat.cloudId && chat.messages.some((m) => m.role === 'user' && m.text === ev.prompt)) {
+        chat.cloudId = ev.cloudSessionId;
+        chat.url = ev.url;
+        chat.messages.push({ role: 'assistant', text: t('ui.cloudLinked') });
+      }
+      break;
+    case 'cloud-message': {
+      // the open cloud session said something (here or in the app): show it unless it's already there
+      if (!ev.cloudId || chat.cloudId !== ev.cloudId || chat.busy) break;
+      const last = [...chat.messages].reverse().find((m) => m.role === ev.role);
+      if (last && (last.text === ev.text || last.text.startsWith(ev.text.slice(0, 80)))) break;
+      chat.messages.push({ role: ev.role, text: ev.text });
+      break;
+    }
+    case 'interactive-only': // this Claude Code starts cloud sessions in a terminal only
+      if (reply) {
+        reply.text = t('ui.cloudInTerminal');
+        reply.pending = false;
+      }
+      break;
+    case 'cloud':
+      chat.cloudId = ev.cloudSessionId;
+      if (ev.url) chat.url = ev.url;
+      break;
     case 'tool':
       if (reply) reply.tool = ev.name;
       break;
@@ -410,6 +694,8 @@ function handleQuickEvent(ev) {
       if (reply) {
         if (!reply.text && ev.text) reply.text = ev.text;
         reply.error = ev.isError;
+        // an expired login can only be renewed interactively
+        if (ev.isError && AUTH_ERROR.test(reply.text)) reply.text += `\n\n${t('ui.loginHint')}`;
       }
       break;
     case 'error':
@@ -520,8 +806,16 @@ function setupControls() {
     e.currentTarget.textContent = t('ui.copied');
     setTimeout(() => applyI18n(), 1200);
   });
+  $('chat-app').addEventListener('click', () => {
+    if (state.chat.url)
+      api.openUrl(state.chat.url, true); // a cloud task opens in the Claude app (claude.ai/code)
+    else openInApp(state.chat.sessionId, state.chat.cwd);
+  });
   $('chat-terminal').addEventListener('click', async () => {
-    if (state.chat.sessionId) await api.openTerminal(state.chat.sessionId, state.chat.cwd);
+    // continues this chat in Claude Code; before the first reply, a new one starts in the chosen folder
+    const { sessionId, cloudId, cwd } = state.chat;
+    const res = await api.openTerminal(sessionId || null, cwd || state.config.quickChatCwd, cloudId);
+    if (!res.ok) showToast(t('ui.terminalFailed'), res.error);
   });
 
   ui.composer.addEventListener('submit', (e) => {
@@ -529,24 +823,60 @@ function setupControls() {
     sendQuick();
   });
   ui.composerInput.addEventListener('keydown', (e) => {
+    if (state.cloning && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      // move through your repositories
+      e.preventDefault();
+      const n = matchingRepos().length;
+      if (n) state.repos.index = (state.repos.index + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+      return renderRepos();
+    }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
+      const highlighted = state.cloning && matchingRepos()[state.repos.index];
+      if (highlighted) return pickRepo(highlighted.fullName);
       sendQuick();
     }
   });
-  ui.composerInput.addEventListener('input', reportSize);
-  ui.composerCwd.addEventListener('click', async () => {
-    const folder = await api.chooseFolder(state.chat.cwd || state.config.quickChatCwd);
-    if (folder) {
-      if (folder !== state.chat.cwd) state.chat.sessionId = null; // a new folder starts a new session
-      state.chat.cwd = folder;
-      render();
+  ui.composerInput.addEventListener('input', () => {
+    if (state.cloning) {
+      state.repos.index = 0;
+      renderRepos();
+    }
+    reportSize();
+  });
+  $('composer-close').addEventListener('click', closeComposer);
+  ui.composerCwd.addEventListener('click', chooseWhere);
+  $('composer-attach').addEventListener('click', async () => addAttachments(await api.chooseFiles()));
+  // files dropped on the input, and images pasted into it
+  ui.composer.addEventListener('dragover', (e) => {
+    if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) e.preventDefault();
+  });
+  ui.composer.addEventListener('drop', (e) => {
+    if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+    e.preventDefault();
+    addAttachments([...e.dataTransfer.files].map((f) => api.pathForFile(f)));
+  });
+  ui.composerInput.addEventListener('paste', async (e) => {
+    const images = [...(e.clipboardData ? e.clipboardData.items : [])].filter(
+      (i) => i.kind === 'file' && i.type.startsWith('image/'),
+    );
+    if (!images.length) return;
+    e.preventDefault();
+    for (const item of images) {
+      const blob = item.getAsFile();
+      const file = blob && (await api.savePasted(new Uint8Array(await blob.arrayBuffer()), blob.type));
+      if (file) addAttachments([file]);
     }
   });
+  ui.composerTarget.addEventListener('change', () => setTarget(ui.composerTarget.value));
 
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    if (state.composerOpen) closeComposer();
+    if (state.cloning) {
+      state.cloning = false;
+      ui.composerInput.value = '';
+      render();
+    } else if (state.composerOpen) closeComposer();
     else if (state.panelOpen) closePanel();
   });
 
@@ -569,6 +899,7 @@ function applyConfig(config) {
   t = PetI18n.translator(config.language);
   applyI18n();
   if (!state.chat.cwd) state.chat.cwd = config.quickChatCwd;
+  if (!state.chat.messages.length && config.quickChatTarget) state.chat.target = config.quickChatTarget;
   if (scaleChanged && state.pet) sprite.setPet(state.pet, config.scale);
   render();
 }
@@ -579,6 +910,7 @@ async function boot() {
   applyConfig(init.config);
   state.pet = init.pet;
   sprite.setPet(init.pet, init.config.scale);
+  if (init.pet) ui.stage.title = init.pet.displayName;
   applyState(init.state);
   setupControls();
 
@@ -587,7 +919,9 @@ async function boot() {
   api.on('pet', (pet) => {
     state.pet = pet;
     sprite.setPet(pet, state.config.scale);
+    ui.stage.title = pet.displayName;
     playOnce('waving', 2);
+    if (pet.announce) showToast(pet.displayName, t('toast.arrived'));
     render();
   });
   api.on('transition', ({ to, session }) => {

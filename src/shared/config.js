@@ -32,9 +32,29 @@ const DEFAULTS = {
   quickChat: {
     cwd: null, // defaults to the home directory
     permissionMode: 'default',
-    model: null,
+    model: 'claude-opus-5-5', // see MODELS in src/electron/main.js
+    effort: 'xhigh', // low | medium | high | xhigh | max
+    openInApp: false, // also open each new quick chat in the Claude desktop app
+    target: 'local', // local: Claude Code here, cloud: a cloud session, chat: a normal chat in the app
+    recent: [], // recently used folders
   },
-  claudePath: null, // defaults to `claude` on PATH
+  rotation: {
+    enabled: false,
+    intervalMinutes: 60,
+    group: null, // rotate among pets whose pet.json has this "group"
+    pets: [], // or an explicit list of pet ids; both empty = every pet
+    order: 'shuffle', // 'shuffle' | 'sequence'
+    lastChangedAt: 0,
+    queue: [],
+  },
+  claudePath: null, // defaults to `claude` on PATH or in the usual install folders
+  learnedClaudePath: null, // where Claude Code ran from, as reported by the hook
+  cloud: {
+    enabled: false, // show cloud sessions, relayed through an ntfy topic (claude-pet cloud setup)
+    server: 'https://ntfy.sh',
+    topic: null,
+    key: null,
+  },
   terminalCommand: null, // e.g. "wezterm start --cwd {cwd} -- {command}"
   staleMinutes: 30,
 };

@@ -43,6 +43,7 @@
             <span class="spacer"></span>
             <button type="button" class="text-button" id="chat-stop" data-i18n="ui.stop" hidden></button>
             <button type="button" class="text-button" id="chat-copy" data-i18n="ui.copy"></button>
+            <button type="button" class="text-button" id="chat-app" data-i18n="ui.openInAppShort"></button>
             <button type="button" class="text-button" id="chat-terminal" data-i18n="ui.continueInTerminal"></button>
           </div>
         </div>
@@ -68,10 +69,20 @@
       </div>
 
       <form id="composer" class="composer" hidden>
+        <div id="composer-notice" class="composer-notice" hidden></div>
+        <div id="composer-files" class="composer-files" hidden></div>
+        <div id="composer-repos" class="composer-repos" hidden></div>
         <textarea id="composer-input" rows="2" spellcheck="false"></textarea>
         <div class="composer-row">
+          <button type="button" class="icon-button" id="composer-attach">📎</button>
           <button type="button" class="text-button folder" id="composer-cwd"></button>
+          <select id="composer-target" class="target">
+            <option value="local" data-i18n="ui.target.local"></option>
+            <option value="cloud" data-i18n="ui.target.cloud"></option>
+            <option value="chat" data-i18n="ui.target.chat"></option>
+          </select>
           <span class="spacer"></span>
+          <button type="button" class="text-button" id="composer-close" data-i18n="ui.close"></button>
           <button type="submit" class="send" id="composer-send">↵</button>
         </div>
       </form>
@@ -80,6 +91,7 @@
     <script src="../shared/atlas.js"></script>
     <script src="../shared/i18n.js"></script>
     <script src="sprite.js"></script>
+    <script src="markdown.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

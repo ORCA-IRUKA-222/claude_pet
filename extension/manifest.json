@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Claude Pet for claude.ai",
+  "version": "0.1.0",
+  "description": "Shows your claude.ai chats on the Claude Pet desktop pet: replying, and replied.",
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{ "matches": ["https://claude.ai/*"], "js": ["content.js"], "run_at": "document_idle" }],
+  "icons": { "128": "icon.png" }
+}

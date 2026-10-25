@@ -1,6 +1,6 @@
 'use strict';
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const EVENTS = new Set(['state', 'transition', 'config', 'pet', 'command', 'quick-event']);
 
@@ -22,8 +22,20 @@ contextBridge.exposeInMainWorld('pet', {
   markAllRead: () => ipcRenderer.send('mark-all-read'),
   dismiss: (id) => ipcRenderer.send('dismiss', id),
   copy: (text) => ipcRenderer.send('copy', text),
-  openTerminal: (sessionId, cwd) => ipcRenderer.invoke('open-terminal', { sessionId, cwd }),
-  quickSend: (prompt, cwd, resume) => ipcRenderer.invoke('quick-send', { prompt, cwd, resume }),
+  openTerminal: (sessionId, cwd, cloudId) => ipcRenderer.invoke('open-terminal', { sessionId, cwd, cloudId }),
+  openUrl: (url, inApp = false) => ipcRenderer.send('open-url', url, Boolean(inApp)),
+  openLink: (url) => ipcRenderer.send('open-link', url),
+  openDesktop: (sessionId, cwd) => ipcRenderer.invoke('open-desktop', { sessionId, cwd }),
+  openChat: (sessionId) => ipcRenderer.invoke('open-chat', sessionId),
+  quickSend: (prompt, cwd, resume, cloud, files) => ipcRenderer.invoke('quick-send', { prompt, cwd, resume, cloud, files }),
+  chooseFiles: () => ipcRenderer.invoke('choose-files'),
+  savePasted: (data, type) => ipcRenderer.invoke('save-pasted', data, type),
+  pathForFile: (file) => webUtils.getPathForFile(file), // a file dropped on the input
+  askInApp: (prompt) => ipcRenderer.invoke('ask-in-app', prompt),
+  folderMenu: (current) => ipcRenderer.invoke('folder-menu', current),
+  cloneRepo: (text) => ipcRenderer.invoke('clone-repo', text),
+  listRepos: () => ipcRenderer.invoke('list-repos'),
+  setQuickTarget: (target) => ipcRenderer.send('quick-target', target),
   quickStop: () => ipcRenderer.send('quick-stop'),
   chooseFolder: (current) => ipcRenderer.invoke('choose-folder', current),
 });
