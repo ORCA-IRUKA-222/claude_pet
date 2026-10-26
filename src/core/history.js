@@ -165,15 +165,25 @@ function readConversation(file, { limit = 60 } = {}) {
   return { cwd, messages: messages.slice(-limit) };
 }
 
+// summaries by file, read again only when the file changed (the list is reloaded often)
+const summaries = new Map();
+
 /** Recent sessions, newest first. */
-function recentSessions({ maxAgeMs = 7 * 24 * 3600e3, limit = 20, now = Date.now() } = {}) {
+function recentSessions({ maxAgeMs = 14 * 24 * 3600e3, limit = 60, now = Date.now() } = {}) {
   const sessions = [];
+  const seen = new Set();
   for (const { file, mtimeMs } of transcriptFiles()) {
     if (now - mtimeMs > maxAgeMs) break;
     if (sessions.length >= limit) break;
-    const s = readSession(file);
-    if (s) sessions.push(s);
+    seen.add(file);
+    let cached = summaries.get(file);
+    if (!cached || cached.mtimeMs !== mtimeMs) {
+      cached = { mtimeMs, session: readSession(file) };
+      summaries.set(file, cached);
+    }
+    if (cached.session) sessions.push({ ...cached.session });
   }
+  for (const file of summaries.keys()) if (!seen.has(file)) summaries.delete(file);
   return sessions;
 }
 

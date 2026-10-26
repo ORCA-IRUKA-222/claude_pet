@@ -8,8 +8,8 @@ const fs = require('fs');
 const path = require('path');
 const { homeDir } = require('../shared/config');
 
-const KEEP = 30;
-const MAX_AGE_MS = 7 * 24 * 3600e3;
+const KEEP = 40;
+const MAX_AGE_MS = 14 * 24 * 3600e3;
 const FIELDS = ['id', 'cwd', 'title', 'prompt', 'firstPrompt', 'message', 'url', 'updatedAt', 'messages'];
 const KEEP_MESSAGES = 20; // per session: the exchanges the relay carried, to show in the pet
 const KEEP_CHARS = 30000;

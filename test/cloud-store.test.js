@@ -6,6 +6,7 @@ const { tempDir } = require('./helpers');
 
 process.env.CLAUDE_PET_HOME = tempDir();
 const { loadCloudSessions, saveCloudSessions } = require('../src/core/cloud-store');
+const { loadDismissed, saveDismissed } = require('../src/core/dismissed-store');
 const { SessionTracker } = require('../src/core/sessions');
 
 const cloud = (id, ago, extra = {}) => ({
@@ -22,7 +23,7 @@ test('cloud sessions are remembered across restarts, recent ones only', () => {
   const now = Date.now();
   const list = [
     cloud('A', 60e3),
-    cloud('B', 8 * 24 * 3600e3), // older than a week
+    cloud('B', 15 * 24 * 3600e3), // older than two weeks
     { ...cloud('C', 1000), url: null }, // the relay test has no link
     { id: 'local', source: 'cli', updatedAt: now },
   ];
@@ -44,7 +45,7 @@ test('cloud sessions are remembered across restarts, recent ones only', () => {
   assert.equal(restored.effectiveStatus, 'idle');
 });
 
-test('a cloud session that ends stays in the list; a local one goes', () => {
+test('a session that ends stays in the list, cloud or local', () => {
   const tracker = new SessionTracker();
   tracker.handle({
     event: 'UserPromptSubmit',
@@ -53,12 +54,12 @@ test('a cloud session that ends stays in the list; a local one goes', () => {
     url: 'https://claude.ai/code/session_X',
     ts: 1,
   });
-  tracker.handle({ event: 'UserPromptSubmit', session_id: 'l1', cwd: '/w', ts: 1 });
+  tracker.handle({ event: 'UserPromptSubmit', session_id: 'l1', cwd: '/w', prompt: 'hi', ts: 1 });
   tracker.handle({ event: 'SessionEnd', session_id: 'c1', ts: 2 });
   tracker.handle({ event: 'SessionEnd', session_id: 'l1', ts: 2 });
   const ids = tracker.list().map((s) => s.id);
-  assert.deepEqual(ids, ['c1']);
-  assert.equal(tracker.list()[0].effectiveStatus, 'idle');
+  assert.deepEqual(ids.sort(), ['c1', 'l1']);
+  assert.ok(tracker.list().every((s) => s.effectiveStatus === 'idle' && s.history));
 });
 
 test('what a cloud session said is kept with it, the latest exchanges only', () => {
@@ -68,4 +69,10 @@ test('what a cloud session said is kept with it, the latest exchanges only', () 
   const [stored] = loadCloudSessions({ now }).sessions;
   assert.equal(stored.messages.length, 20);
   assert.equal(stored.messages[19].text, 'm29');
+});
+
+test('dismissed sessions are remembered across restarts', () => {
+  assert.deepEqual(loadDismissed(), []);
+  saveDismissed(['a', 'b']);
+  assert.deepEqual(loadDismissed(), ['a', 'b']);
 });
