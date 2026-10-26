@@ -44,6 +44,7 @@ const autostart = require('../core/autostart');
 const { findClaude, isClaudeExecutable } = require('../core/claude-path');
 const { RelayListener } = require('../core/relay');
 const { loadCloudSessions, saveCloudSessions } = require('../core/cloud-store');
+const { loadDismissed, saveDismissed } = require('../core/dismissed-store');
 const { cloneRepo, remember, listGitHubRepos, isCloned } = require('../core/repos');
 const { version } = require('../../package.json');
 const { buildId } = require('../shared/build');
@@ -68,7 +69,7 @@ let quitting = false;
 let awayCause = null; // 'idle' | 'lock' | 'sleep'
 const power = { locked: false, suspended: false };
 
-const tracker = new SessionTracker({ staleMs: config.staleMinutes * 60e3 });
+const tracker = new SessionTracker({ staleMs: config.staleMinutes * 60e3, dismissed: loadDismissed() });
 // The pet asks the strongest model by default; weaker ones only if chosen in the menu.
 const MODELS = [
   ['claude-opus-5-5', 'Opus 5.5'],
@@ -1350,7 +1351,15 @@ async function boot() {
   readAutostart();
   tracker.on('change', pushState);
   tracker.on('change', () => relay && saveCloudSoon()); // e.g. a cloud session removed from the list
-  // Past Claude Code conversations, so the list isn't empty before the first hook event.
+  tracker.on('dismissed', (ids) => {
+    try {
+      saveDismissed(ids);
+    } catch (err) {
+      console.error('[claude-pet] dismissed sessions:', err.message);
+    }
+  });
+  // Past Claude Code conversations, so the list isn't empty before the first hook event, and
+  // conversations that went on elsewhere (the Claude app, before the pet started) show up.
   const loadHistory = () => {
     try {
       tracker.seed(recentSessions());
@@ -1359,7 +1368,7 @@ async function boot() {
     }
   };
   loadHistory();
-  setInterval(loadHistory, 10 * 60e3).unref();
+  setInterval(loadHistory, 2 * 60e3).unref();
   startRelay();
   tracker.on('transition', notifyTransition);
   permissions.on('change', pushState);

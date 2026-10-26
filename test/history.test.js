@@ -55,7 +55,7 @@ test('prompts sent by tools or the system are not taken as the user prompt', () 
 
 test('recentSessions lists recent conversations newest first and skips old or empty ones', () => {
   const now = Date.now();
-  writeTranscript('-w-old', 'cccc-3333', [user('昔の会話'), assistant([{ type: 'text', text: 'old' }])], now - 10 * 24 * 3600e3);
+  writeTranscript('-w-old', 'cccc-3333', [user('昔の会話'), assistant([{ type: 'text', text: 'old' }])], now - 20 * 24 * 3600e3);
   writeTranscript('-w-empty', 'dddd-4444', [{ type: 'system', subtype: 'init' }], now - 60e3);
   writeTranscript('-w-new', 'eeee-5555', [user('最新の会話'), assistant([{ type: 'text', text: 'new' }])], now - 30e3);
   const list = recentSessions({ now });
@@ -66,7 +66,7 @@ test('recentSessions lists recent conversations newest first and skips old or em
   );
   assert.ok(ids.includes('eeee-5555'));
   assert.ok(ids.includes('aaaa-1111'));
-  assert.ok(!ids.includes('cccc-3333'), 'older than a week');
+  assert.ok(!ids.includes('cccc-3333'), 'older than two weeks');
   assert.ok(!ids.includes('dddd-4444'), 'no conversation in it');
 });
 
@@ -91,6 +91,12 @@ test('seeded history is idle, survives pruning, and never overwrites a live sess
     tracker.list().some((s) => s.id === 'past'),
     'history is kept past expireMs',
   );
+
+  // the conversation went on without the hooks: the list catches up on the next reload
+  tracker.seed([{ id: 'past', cwd: '/w/past', prompt: '続き', message: '続きの返事', updatedAt: now - 60e3 }]);
+  const updated = tracker.list().find((s) => s.id === 'past');
+  assert.equal(updated.message, '続きの返事');
+  assert.equal(updated.firstPrompt, '前の依頼');
 
   tracker.handle({ session_id: 'past', cwd: '/w/past', event: 'UserPromptSubmit', ts: 2 });
   assert.equal(tracker.list().find((s) => s.id === 'past').history, false);

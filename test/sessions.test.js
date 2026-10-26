@@ -108,11 +108,60 @@ test('compaction while idle returns to the previous state', () => {
   assert.equal(tracker.aggregate().status, 'ready');
 });
 
-test('SessionEnd removes the session', () => {
+test('SessionEnd removes an empty session and keeps a conversation as history', () => {
   const { tracker, send } = setup();
   send('UserPromptSubmit');
   send('SessionEnd', { reason: 'prompt_input_exit' });
   assert.equal(tracker.aggregate().total, 0);
+
+  send('UserPromptSubmit', { prompt: 'fix the bug' });
+  send('Stop', { message: 'Fixed it.' });
+  send('SessionEnd', { reason: 'prompt_input_exit' });
+  const [s] = tracker.list();
+  assert.equal(s.history, true);
+  assert.equal(s.effectiveStatus, 'idle');
+  assert.equal(s.message, 'Fixed it.');
+});
+
+test('quiet sessions are kept as history, the newest ones up to a cap', () => {
+  let now = 1_000_000;
+  const tracker = new SessionTracker({ now: () => now, staleMs: 60_000, expireMs: 600_000, maxHistory: 2 });
+  for (const id of ['a', 'b', 'c']) {
+    tracker.handle({ session_id: id, cwd: `/w/${id}`, event: 'UserPromptSubmit', prompt: id, ts: now });
+    now += 1000;
+  }
+  now += 700_000;
+  tracker.prune();
+  assert.deepEqual(
+    tracker.list().map((s) => [s.id, s.history, s.status]),
+    [
+      ['c', true, 'idle'],
+      ['b', true, 'idle'],
+    ],
+  );
+});
+
+test('a dismissed session stays off the list until it is active again', () => {
+  const tracker = new SessionTracker({ dismissed: ['old'] });
+  const saved = [];
+  tracker.on('dismissed', (ids) => saved.push(ids));
+  const past = (id) => ({ id, cwd: '/w', prompt: 'p', updatedAt: Date.now() - 1000 });
+  tracker.seed([past('old'), past('keep')]);
+  assert.deepEqual(
+    tracker.list().map((s) => s.id),
+    ['keep'],
+  );
+  tracker.dismiss('keep');
+  tracker.seed([past('keep')]);
+  assert.equal(tracker.list().length, 0);
+  assert.deepEqual(saved.pop(), ['old', 'keep']);
+
+  tracker.handle({ session_id: 'keep', cwd: '/w', event: 'UserPromptSubmit', prompt: 'again', ts: 1 });
+  assert.deepEqual(
+    tracker.list().map((s) => s.id),
+    ['keep'],
+  );
+  assert.deepEqual(saved.pop(), ['old']);
 });
 
 test('the most urgent session is primary', () => {

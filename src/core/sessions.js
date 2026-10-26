@@ -18,6 +18,7 @@ const AGENT_TOOLS = new Set(['Agent', 'Task']);
 const ASK_TOOLS = { AskUserQuestion: 'question', ExitPlanMode: 'plan' };
 const WAITING_NOTIFICATIONS = new Set(['permission_prompt', 'elicitation_dialog', 'elicitation_url_dialog', 'agent_needs_input']);
 const MAX_FILES = 100;
+const MAX_DISMISSED = 200;
 const TODO_STATUSES = new Set(['pending', 'in_progress', 'completed']);
 
 function toolActivity(tool) {
@@ -69,6 +70,11 @@ function newSession(id, cwd, ts, extra = {}) {
   };
 }
 
+/** Whether a session holds a conversation worth keeping in the list after it ends. */
+function hasConversation(s) {
+  return Boolean(s.prompt || s.firstPrompt || s.message || s.title || s.url);
+}
+
 /** Status as the pet shows it: a ready session that was already seen counts as idle. */
 function effectiveStatus(session) {
   if (session.status === 'ready' && !session.unread) return 'idle';
@@ -84,12 +90,15 @@ function todoProgress(todos) {
 }
 
 class SessionTracker extends EventEmitter {
-  constructor({ now = Date.now, staleMs = 30 * 60e3, expireMs = 12 * 3600e3 } = {}) {
+  constructor({ now = Date.now, staleMs = 30 * 60e3, expireMs = 12 * 3600e3, maxHistory = 120, dismissed = [] } = {}) {
     super();
     this.now = now;
     this.staleMs = staleMs;
     this.expireMs = expireMs;
+    this.maxHistory = maxHistory; // past conversations kept in the list, newest first
     this.sessions = new Map();
+    // sessions taken off the list, so reloading the history doesn't bring them back
+    this.dismissed = new Set(Array.isArray(dismissed) ? dismissed.filter((id) => typeof id === 'string') : []);
   }
 
   handle(e) {
@@ -101,14 +110,20 @@ class SessionTracker extends EventEmitter {
     const id = e.session_id;
     if (e.event === 'SessionEnd') {
       const ended = this.sessions.get(id);
-      // a cloud session ends when its container stops; it stays listed, to be opened in the app
-      if (ended && ended.source === 'cloud' && ended.url) {
+      if (!ended) return null;
+      // the conversation stays listed (a cloud one ends when its container stops), to be
+      // read or resumed later; a session that never got a prompt goes
+      if (hasConversation(ended)) {
+        this.finishTurn(ended, e.ts);
         this.setIdle(ended);
+        ended.subagents = 0;
         ended.history = true;
-        this.emit('change');
-      } else if (this.sessions.delete(id)) this.emit('change');
+      } else this.sessions.delete(id);
+      this.emit('change');
       return null;
     }
+    // activity in a session taken off the list brings it back
+    if (this.dismissed.delete(id)) this.emit('dismissed', [...this.dismissed]);
 
     const ts = Number.isFinite(e.ts) ? e.ts : this.now();
     let s = this.sessions.get(id);
@@ -351,19 +366,41 @@ class SessionTracker extends EventEmitter {
 
   dismiss(id) {
     const removed = this.sessions.delete(id);
+    if (!this.dismissed.has(id)) {
+      this.dismissed.add(id);
+      for (const old of this.dismissed) {
+        if (this.dismissed.size <= MAX_DISMISSED) break;
+        this.dismissed.delete(old);
+      }
+      this.emit('dismissed', [...this.dismissed]);
+    }
     if (removed) this.emit('change');
     return removed;
   }
 
-  /** Expire sessions whose hooks went quiet (crashed terminals, interrupted turns). */
   /**
    * Add past conversations (from Claude Code's transcripts) as idle, already-read sessions.
-   * Live sessions are never overwritten.
+   * Live sessions are never overwritten; a past one is brought up to date when its
+   * conversation went on without the hooks (in another app, or before the pet started).
    */
   seed(list) {
     let added = false;
     for (const h of list || []) {
-      if (!h || !h.id || this.sessions.has(h.id)) continue;
+      if (!h || !h.id || this.dismissed.has(h.id)) continue;
+      const known = this.sessions.get(h.id);
+      if (known) {
+        if (known.history && h.updatedAt > known.updatedAt) {
+          Object.assign(known, {
+            updatedAt: h.updatedAt,
+            title: h.title || known.title,
+            prompt: h.prompt || known.prompt,
+            firstPrompt: known.firstPrompt || h.firstPrompt || h.prompt || null,
+            message: h.message || known.message,
+          });
+          added = true;
+        }
+        continue;
+      }
       // `claude -p` runs (entrypoint sdk-cli) are the pet's quick chats
       const source = h.source || (h.entrypoint === 'sdk-cli' ? 'quickchat' : 'cli');
       const s = newSession(h.id, h.cwd, h.updatedAt, { history: true, source, entrypoint: h.entrypoint || null });
@@ -377,25 +414,38 @@ class SessionTracker extends EventEmitter {
       this.sessions.set(h.id, s);
       added = true;
     }
+    if (this.trimHistory()) added = true;
     if (added) this.emit('change');
     return added;
   }
 
+  /** Keep the newest past conversations only. */
+  trimHistory() {
+    const past = [...this.sessions.values()].filter((s) => s.history).sort((a, b) => b.updatedAt - a.updatedAt);
+    for (const s of past.slice(this.maxHistory)) this.sessions.delete(s.id);
+    return past.length > this.maxHistory;
+  }
+
+  /** Settle sessions whose hooks went quiet (crashed terminals, interrupted turns). */
   prune() {
     const now = this.now();
     let changed = false;
     for (const [id, s] of this.sessions) {
       const quiet = now - s.updatedAt;
-      if (quiet > this.expireMs && !s.history) {
-        this.sessions.delete(id);
-        changed = true;
-      } else if ((s.status === 'running' || s.status === 'waiting') && quiet > this.staleMs) {
+      if ((s.status === 'running' || s.status === 'waiting') && quiet > this.staleMs) {
         this.finishTurn(s, s.lastTs);
         this.setIdle(s);
         s.stale = true;
         changed = true;
       }
+      if (quiet > this.expireMs && !s.history) {
+        // long quiet: kept as a past conversation, like one that ended
+        if (hasConversation(s)) s.history = true;
+        else this.sessions.delete(id);
+        changed = true;
+      }
     }
+    if (this.trimHistory()) changed = true;
     if (changed) this.emit('change');
     return changed;
   }
