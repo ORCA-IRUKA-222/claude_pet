@@ -137,7 +137,10 @@ const timeKeeper = new TimeKeeper({ pomodoro: config.pomodoro });
 const modes = new Modes({ dnd: config.dnd });
 const memos = new MemoStore();
 const calendar = new CalendarFeed({ fetch: (url, init) => net.fetch(url, init) });
-const permissions = new PermissionBroker({ timeoutMs: permissionTimeoutMs(config) });
+const permissions = new PermissionBroker({
+  timeoutMs: permissionTimeoutMs(config),
+  allowAll: config.permissionPrompt.allowAll === true,
+});
 
 function persist(changes) {
   Object.assign(config, changes);
@@ -191,7 +194,13 @@ function rendererConfig() {
 }
 
 function appState() {
-  return { sessions: tracker.list(), aggregate: tracker.aggregate(), permissions: permissions.list(), modes: modes.snapshot() };
+  return {
+    sessions: tracker.list(),
+    aggregate: tracker.aggregate(),
+    permissions: permissions.list(),
+    autoAllow: { all: permissions.allowAll, sessions: [...permissions.allowedSessions] },
+    modes: modes.snapshot(),
+  };
 }
 
 function pushState() {
@@ -499,6 +508,13 @@ function buildMenu() {
       },
     },
     {
+      label: t('menu.permissionAllowAll'),
+      type: 'checkbox',
+      checked: permissions.allowAll,
+      enabled: config.permissionPrompt.enabled !== false,
+      click: (item) => setAllowAll(item.checked),
+    },
+    {
       label: t('menu.greetings'),
       type: 'checkbox',
       checked: config.greetings !== false,
@@ -698,7 +714,9 @@ function updateTray() {
   const attention = agg.counts.waiting + agg.counts.failed + agg.counts.ready;
   const name = pet ? `${pet.displayName} — ` : '';
   const mode = modes.snapshot();
-  const modeText = mode.dnd ? ` · ${t('mode.dnd')}` : mode.focus ? ` · ${t('mode.focus')}` : '';
+  const modeText =
+    (mode.dnd ? ` · ${t('mode.dnd')}` : mode.focus ? ` · ${t('mode.focus')}` : '') +
+    (permissions.allowAll ? ` · ${t('mode.allowAll')}` : '');
   tray.setToolTip(`Claude Pet — ${name}${t(`status.${agg.status}`)}${attention ? ` (${attention})` : ''}${modeText}`);
   if (process.platform === 'darwin') tray.setTitle(attention ? String(attention) : '');
   tray.setContextMenu(buildMenu());
@@ -766,6 +784,39 @@ function handleEvent(event) {
   // A pause that never reached a tool call shouldn't stop the next turn.
   if (TURN_OVER.has(event.event) && typeof event.session_id === 'string') cancelPause(event.session_id);
   tracker.handle(event);
+}
+
+/**
+ * `claude-pet update` brings new code but not new hook settings, and Claude Code runs the
+ * hooks as registered: with the old ones the pet couldn't take more than 5 seconds to answer
+ * a permission prompt. Registered hooks are brought up to date when the pet starts.
+ */
+function refreshHooks() {
+  try {
+    const nodePath = installer.isInstalled() && !installer.isCurrent() && installer.hookNodePath();
+    if (nodePath) installer.install({ nodePath });
+  } catch (err) {
+    console.error('[claude-pet] hooks:', err.message);
+  }
+}
+
+/** Let every permission prompt through without asking (after a warning), or stop doing so. */
+function setAllowAll(on) {
+  if (on) {
+    const response = dialog.showMessageBoxSync({
+      type: 'warning',
+      buttons: [t('allowAll.ok'), t('allowAll.cancel')],
+      defaultId: 1,
+      cancelId: 1,
+      title: 'Claude Pet',
+      message: t('allowAll.title'),
+      detail: t('allowAll.detail'),
+    });
+    if (response !== 0) return updateTray();
+  }
+  persist({ permissionPrompt: { ...config.permissionPrompt, allowAll: on } });
+  permissions.setAllowAll(on);
+  updateTray();
 }
 
 function handlePermission(event, options) {
@@ -1234,6 +1285,8 @@ function registerIpc() {
 
   // Claude Code sessions
   ipcMain.on('permission-answer', (_e, { id, behavior }) => permissions.answer(String(id), behavior));
+  ipcMain.on('permission-session', (_e, { id, on }) => permissions.setSessionAllowed(String(id), Boolean(on)));
+  ipcMain.on('permission-all', (_e, on) => setAllowAll(Boolean(on)));
   ipcMain.on('pause-session', (_e, id) => {
     if (requestPause(String(id))) tracker.setPauseRequested(String(id), true);
   });
@@ -1325,14 +1378,14 @@ async function boot() {
       build: buildId(),
       secret,
       onPermission: handlePermission,
-      onEvent: (event, { fromExtension } = {}) => {
+      onEvent: (event, { fromExtension, permission } = {}) => {
         if (!event || typeof event !== 'object') return;
         // a browser extension only reports claude.ai chats; it never tells where claude is
-        if (fromExtension) tracker.handle({ ...event, claude_path: undefined, source: 'browser' });
-        else {
-          learnClaudePath(event.claude_path);
-          handleEvent(event);
-        }
+        if (fromExtension) return void tracker.handle({ ...event, claude_path: undefined, source: 'browser' });
+        learnClaudePath(event.claude_path);
+        // a prompt let through without asking doesn't make the session wait
+        const allowed = permission && config.permissionPrompt.enabled !== false && permissions.autoAllows(event);
+        handleEvent(allowed ? { ...event, event: 'PermissionAutoAllowed' } : event);
       },
       onControl: handleControl,
       getStatus: () => ({ visible: Boolean(win && win.isVisible()), sessions: tracker.list(), aggregate: tracker.aggregate() }),
@@ -1349,6 +1402,7 @@ async function boot() {
   // Checked often so the switch happens on time even after the computer wakes from sleep.
   setInterval(checkRotation, 30e3).unref();
   readAutostart();
+  refreshHooks();
   tracker.on('change', pushState);
   tracker.on('change', () => relay && saveCloudSoon()); // e.g. a cloud session removed from the list
   tracker.on('dismissed', (ids) => {

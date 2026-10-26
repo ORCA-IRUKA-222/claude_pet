@@ -28,6 +28,7 @@ const ui = {
   sessionList: $('session-list'),
   sessionsEmpty: $('sessions-empty'),
   setupHint: $('setup-hint'),
+  autoBanner: $('auto-banner'),
   tabSessions: $('tab-sessions'),
   tabChat: $('tab-chat'),
   tabTools: $('tab-tools'),
@@ -60,6 +61,7 @@ const state = {
   sessions: [],
   aggregate: { status: 'idle', activity: null, counts: {}, primary: null, total: 0 },
   permissions: [], // permission prompts waiting for 許可 / 拒否 in the pet
+  autoAllow: { all: false, sessions: [] }, // let through without asking
   modes: { dnd: null, focus: false, away: false },
   mood: { night: false, tired: false },
   hooksInstalled: true,
@@ -297,9 +299,14 @@ function applyI18n() {
   ui.bubblePause.title = t('ui.pause');
 }
 
+function autoAllowed(s) {
+  return state.autoAllow.all || state.autoAllow.sessions.includes(s.id);
+}
+
 function permissionButtons(perm, className) {
   const box = el('div', className);
   box.appendChild(button(t('perm.allow'), () => api.answerPermission(perm.id, 'allow'), 'pill-button allow'));
+  box.appendChild(button(t('perm.allowSession'), () => api.answerPermission(perm.id, 'allow-session'), 'pill-button'));
   box.appendChild(button(t('perm.deny'), () => api.answerPermission(perm.id, 'deny'), 'pill-button deny'));
   box.appendChild(button(t('perm.terminal'), () => api.answerPermission(perm.id, null), 'text-button muted'));
   const seconds = Math.max(0, Math.ceil((perm.expiresAt - Date.now()) / 1000));
@@ -432,6 +439,8 @@ function sessionActions(s) {
     else add(t('ui.pause'), () => api.pauseSession(s.id));
   }
   if (s.unread || s.effectiveStatus === 'failed') add(t('ui.markRead'), () => api.markRead(s.id));
+  if (state.autoAllow.all) add(t('perm.stopAll'), () => api.setAllowAll(false));
+  else if (autoAllowed(s)) add(t('perm.stopSession'), () => api.setSessionAutoAllow(s.id, false));
   // cloud sessions and browser chats live on claude.ai, not on this computer
   if (s.url && s.source === 'cloud') add(t('ui.openInApp'), () => api.openUrl(s.url, true));
   if (s.url) add(t('ui.openInBrowser'), () => api.openUrl(s.url));
@@ -474,6 +483,8 @@ function sessionMeta(s) {
     meta.appendChild(chip);
   }
   if (s.files && s.files.length) meta.appendChild(el('span', 'chip', `📝 ${s.files.length}`));
+  // the whole list says so when everything is allowed; a single session says it here
+  if (!state.autoAllow.all && autoAllowed(s)) meta.appendChild(el('span', 'chip auto-chip', t('perm.autoSession')));
   return meta.children.length ? meta : null;
 }
 
@@ -519,6 +530,7 @@ function renderSessions() {
   const sessions = [...state.sessions].sort((a, b) => b.updatedAt - a.updatedAt);
   ui.sessionsEmpty.hidden = sessions.length > 0;
   ui.setupHint.hidden = state.hooksInstalled;
+  ui.autoBanner.hidden = !state.autoAllow.all;
 
   const count = attentionCount();
   const c = state.aggregate.counts || {};
@@ -1266,6 +1278,7 @@ function setupControls() {
     });
   }
   $('mark-all').addEventListener('click', () => api.markAllRead());
+  $('auto-banner-stop').addEventListener('click', () => api.setAllowAll(false));
   $('new-chat').addEventListener('click', newChat);
   $('chat-new').addEventListener('click', newChat);
   $('chat-stop').addEventListener('click', () => api.quickStop());
@@ -1367,10 +1380,11 @@ function setupControls() {
   setInterval(checkTimeOfDay, 60000);
 }
 
-function applyState({ sessions, aggregate, permissions, modes }) {
+function applyState({ sessions, aggregate, permissions, autoAllow, modes }) {
   state.sessions = sessions;
   state.aggregate = aggregate;
   state.permissions = permissions || [];
+  state.autoAllow = autoAllow || { all: false, sessions: [] };
   state.modes = modes || { dnd: null, focus: false, away: false };
   if (state.expanded && !sessions.some((s) => s.id === state.expanded)) state.expanded = null;
   playStatus();

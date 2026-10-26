@@ -207,6 +207,11 @@
 
       'perm.title': '許可しますか？',
       'perm.allow': '許可',
+      'perm.allowSession': 'このセッションは全部許可',
+      'perm.autoSession': '⚡ 自動で許可中',
+      'perm.autoAll': '⚡ すべて自動で許可中',
+      'perm.stopSession': '自動許可をやめる',
+      'perm.stopAll': 'すべて自動で許可をやめる',
       'perm.deny': '拒否',
       'perm.terminal': 'ターミナルで答える',
       'perm.remaining': 'あと {n} 秒',
@@ -287,6 +292,7 @@
       'digest.separator': '・',
 
       'mode.dnd': 'おやすみモード中',
+      'mode.allowAll': 'すべて自動で許可中',
       'mode.focus': '集中中',
       'mode.away': '離席中',
 
@@ -299,6 +305,12 @@
       'menu.dnd.allowWaiting': '入力待ちは知らせる',
       'menu.dnd.off': '解除する',
       'menu.permissionPrompt': 'ペットで許可を出す',
+      'menu.permissionAllowAll': 'すべて自動で許可する（確認しない）',
+      'allowAll.title': 'Claude Code の操作をすべて確認なしで許可しますか？',
+      'allowAll.detail':
+        'ファイルの書き換えやコマンドの実行など、許可を求められたものはペットがすべて自動で許可します（Claude Code の設定で拒否しているものは除く）。メニューからいつでも戻せます。',
+      'allowAll.ok': 'すべて許可する',
+      'allowAll.cancel': 'やめる',
       'menu.screenshot': 'スクリーンショットで質問',
       'menu.greetings': 'あいさつ・ひとこと',
       'menu.tools': 'タイマー・メモ・予定',
@@ -508,6 +520,11 @@
 
       'perm.title': 'Allow this?',
       'perm.allow': 'Allow',
+      'perm.allowSession': 'Allow all in this session',
+      'perm.autoSession': '⚡ Allowing automatically',
+      'perm.autoAll': '⚡ Allowing everything automatically',
+      'perm.stopSession': 'Stop allowing automatically',
+      'perm.stopAll': 'Stop allowing everything',
       'perm.deny': 'Deny',
       'perm.terminal': 'Answer in terminal',
       'perm.remaining': '{n}s left',
@@ -589,6 +606,7 @@
       'digest.separator': ', ',
 
       'mode.dnd': 'Do not disturb',
+      'mode.allowAll': 'allowing everything',
       'mode.focus': 'Focusing',
       'mode.away': 'Away',
 
@@ -601,6 +619,12 @@
       'menu.dnd.allowWaiting': 'Still tell me when input is needed',
       'menu.dnd.off': 'Turn off',
       'menu.permissionPrompt': 'Answer permission prompts in the pet',
+      'menu.permissionAllowAll': 'Allow everything automatically (no prompts)',
+      'allowAll.title': 'Allow everything Claude Code asks for, without asking you?',
+      'allowAll.detail':
+        'The pet will allow every permission prompt, such as editing files or running commands (except what your Claude Code settings deny). You can turn this off in the menu at any time.',
+      'allowAll.ok': 'Allow everything',
+      'allowAll.cancel': 'Cancel',
       'menu.screenshot': 'Ask about a screenshot',
       'menu.greetings': 'Greetings and small talk',
       'menu.tools': 'Timer, memos, calendar',

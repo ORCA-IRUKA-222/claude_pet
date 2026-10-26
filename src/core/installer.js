@@ -153,6 +153,51 @@ function uninstall() {
   return removed;
 }
 
+/** Our handlers per event, without the node path (it differs per computer), comparable as text. */
+function ourHandlers(hooks) {
+  const out = {};
+  for (const [event, groups] of Object.entries(hooks || {})) {
+    if (!Array.isArray(groups)) continue;
+    const mine = groups.flatMap((g) =>
+      (g.hooks || []).filter(isOurs).map(({ command, ...rest }) => JSON.stringify({ matcher: g.matcher || null, ...rest })),
+    );
+    if (mine.length) out[event] = mine;
+  }
+  return JSON.stringify(
+    Object.keys(out)
+      .sort()
+      .map((event) => [event, out[event]]),
+  );
+}
+
+/** The node that our installed hooks run with, or null. */
+function hookNodePath() {
+  try {
+    for (const groups of Object.values(readSettings(settingsPath()).hooks || {})) {
+      for (const g of Array.isArray(groups) ? groups : []) {
+        const handler = (g.hooks || []).find(isOurs);
+        if (handler && handler.command) return handler.command;
+      }
+    }
+  } catch {
+    // unreadable settings
+  }
+  return null;
+}
+
+/**
+ * Whether the installed hooks are the ones this version registers. An update can change
+ * them (e.g. how long the hook may wait for 許可 / 拒否), and Claude Code only uses what
+ * is in settings.json.
+ */
+function isCurrent() {
+  try {
+    return ourHandlers(readSettings(settingsPath()).hooks) === ourHandlers(buildHooks('node'));
+  } catch {
+    return false;
+  }
+}
+
 function isInstalled() {
   try {
     const hooks = readSettings(settingsPath()).hooks || {};
@@ -166,6 +211,8 @@ module.exports = {
   install,
   uninstall,
   isInstalled,
+  isCurrent,
+  hookNodePath,
   stripHooks,
   buildHooks,
   settingsPath,

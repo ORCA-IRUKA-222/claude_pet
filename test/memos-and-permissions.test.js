@@ -68,6 +68,36 @@ test('permission requests time out and can be aborted', async () => {
   assert.equal(broker.list().length, 0);
 });
 
+test('a session can be allowed as a whole, and everything can be allowed', async () => {
+  const broker = new PermissionBroker({ timeoutMs: 5000 });
+  const first = broker.request({ session_id: 's1', tool_name: 'Bash' });
+  const second = broker.request({ session_id: 's1', tool_name: 'Edit' });
+  const other = broker.request({ session_id: 's2', tool_name: 'Bash' });
+  assert.ok(broker.answer(broker.list()[0].id, 'allow-session'));
+  assert.deepEqual(await first, { behavior: 'allow' });
+  assert.deepEqual(await second, { behavior: 'allow' }, 'what the session waits for goes through too');
+  assert.deepEqual(await broker.request({ session_id: 's1', tool_name: 'Bash' }), { behavior: 'allow' });
+  assert.deepEqual(
+    broker.list().map((p) => p.sessionId),
+    ['s2'],
+    'other sessions still ask',
+  );
+  // a chat in the pet ends after each reply and goes on in the same session
+  broker.observe({ event: 'SessionEnd', session_id: 's1' });
+  assert.ok(broker.autoAllows({ session_id: 's1' }));
+  broker.setSessionAllowed('s1', false);
+  assert.ok(!broker.autoAllows({ session_id: 's1' }));
+
+  broker.setAllowAll(true);
+  assert.deepEqual(await other, { behavior: 'allow' });
+  assert.deepEqual(await broker.request({ session_id: 's3' }), { behavior: 'allow' });
+  broker.setAllowAll(false);
+  broker.request({ session_id: 's3' });
+  assert.equal(broker.list().length, 1);
+  broker.cancelAll();
+  assert.ok(new PermissionBroker({ allowAll: true }).autoAllows({ session_id: 'x' }));
+});
+
 test('answers are signed with the shared secret', () => {
   const secret = 'a'.repeat(64);
   const signature = sign(secret, 'nonce', 'allow');
