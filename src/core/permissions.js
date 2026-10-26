@@ -8,6 +8,9 @@
 // times out, or the user picks "answer in the terminal", the hook gets no
 // decision and Claude Code carries on as usual.
 //
+// The user can also let a whole session, or every session, through without asking:
+// those requests are allowed as soon as they arrive.
+//
 // Answers are signed with a secret that only the pet and the hook can read
 // (~/.claude-pet/secret), so another program listening on the pet's port
 // can't approve tool calls on its own.
@@ -29,11 +32,37 @@ function verify(secret, nonce, behavior, signature) {
 }
 
 class PermissionBroker extends EventEmitter {
-  constructor({ timeoutMs = 120e3, now = Date.now } = {}) {
+  constructor({ timeoutMs = 120e3, now = Date.now, allowAll = false } = {}) {
     super();
     this.timeoutMs = timeoutMs;
     this.now = now;
     this.pending = new Map();
+    this.allowAll = Boolean(allowAll); // every session, until turned off
+    // 「このセッションは全部許可」, until the pet restarts: a chat in the pet ends its process
+    // after every reply, and goes on in the same session
+    this.allowedSessions = new Set();
+  }
+
+  /** Whether this request is allowed without asking. */
+  autoAllows(event) {
+    return this.allowAll || this.allowedSessions.has(String((event && event.session_id) || ''));
+  }
+
+  setAllowAll(on) {
+    this.allowAll = Boolean(on);
+    if (this.allowAll) for (const id of [...this.pending.keys()]) this.settle(id, { behavior: 'allow' });
+    this.emit('change');
+  }
+
+  /** Allow (or stop allowing) everything a session asks; what it is waiting for now goes through. */
+  setSessionAllowed(sessionId, on) {
+    const id = String(sessionId || '');
+    if (!id) return;
+    if (on) this.allowedSessions.add(id);
+    else this.allowedSessions.delete(id);
+    if (on)
+      for (const entry of [...this.pending.values()]) if (entry.sessionId === id) this.settle(entry.id, { behavior: 'allow' });
+    this.emit('change');
   }
 
   /**
@@ -41,6 +70,10 @@ class PermissionBroker extends EventEmitter {
    * @returns {Promise<{behavior: 'allow'|'deny'}|null>} null means "no decision"
    */
   request(event, { signal } = {}) {
+    if (this.autoAllows(event)) {
+      this.emit('auto', event);
+      return Promise.resolve({ behavior: 'allow' });
+    }
     return new Promise((resolve) => {
       const id = crypto.randomUUID();
       const entry = {
@@ -62,11 +95,15 @@ class PermissionBroker extends EventEmitter {
     });
   }
 
-  /** The user's answer from the pet: 'allow', 'deny', or null to leave it to the terminal. */
+  /**
+   * The user's answer from the pet: 'allow', 'deny', 'allow-session' (this one and the rest
+   * of the session), or null to leave it to the terminal.
+   */
   answer(id, behavior) {
     const entry = this.pending.get(id);
     if (!entry) return false;
-    this.settle(id, behavior === 'allow' || behavior === 'deny' ? { behavior } : null);
+    if (behavior === 'allow-session') this.setSessionAllowed(entry.sessionId, true);
+    else this.settle(id, behavior === 'allow' || behavior === 'deny' ? { behavior } : null);
     return true;
   }
 

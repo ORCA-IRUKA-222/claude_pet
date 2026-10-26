@@ -56,6 +56,8 @@ contextBridge.exposeInMainWorld('pet', {
 
   // Claude Code sessions
   answerPermission: (id, behavior) => ipcRenderer.send('permission-answer', { id, behavior }),
+  setSessionAutoAllow: (id, on) => ipcRenderer.send('permission-session', { id, on }),
+  setAllowAll: (on) => ipcRenderer.send('permission-all', on),
   pauseSession: (id) => ipcRenderer.send('pause-session', id),
   cancelPause: (id) => ipcRenderer.send('cancel-pause', id),
   openFile: (sessionId, file, reveal = false) => ipcRenderer.invoke('open-file', { sessionId, file, reveal }),

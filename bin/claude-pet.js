@@ -564,7 +564,14 @@ async function doctor() {
       .filter((c) => c.path !== claude)
       .map((c) => ['  ほかの Claude Code', `${c.path}${c.version ? `（${c.version}）` : ''}`]),
     ['クイックチャット', `${config.quickChat.model || 'claude-opus-5-5'}・エフォート ${config.quickChat.effort || 'xhigh'}`],
-    ['フック', installer.isInstalled() ? '登録済み' : '未登録（claude-pet setup を実行してください）'],
+    [
+      'フック',
+      !installer.isInstalled()
+        ? '未登録（claude-pet setup を実行してください）'
+        : installer.isCurrent()
+          ? '登録済み'
+          : '登録済み・古い設定（ペットの起動時か claude-pet setup で更新されます）',
+    ],
     [
       '会話記録',
       files.length

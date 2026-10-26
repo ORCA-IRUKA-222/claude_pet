@@ -56,6 +56,26 @@ test('install is idempotent', () => {
   assert.equal(settings.hooks.PostToolUse.length, 2); // the user's hook + ours
 });
 
+test('hooks registered by an older version are recognised as outdated', () => {
+  installer.install({ nodePath: '/opt/node/bin/node' });
+  assert.equal(installer.isCurrent(), true);
+  assert.equal(installer.hookNodePath(), '/opt/node/bin/node');
+  // older versions gave the permission hook 5 seconds and had no pause gate
+  const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+  settings.hooks.PermissionRequest[0].hooks[0].timeout = 5;
+  settings.hooks.PreToolUse = settings.hooks.PreToolUse.map((g) => ({
+    ...g,
+    hooks: g.hooks.filter((h) => !(h.args || []).includes('--gate')),
+  }));
+  fs.writeFileSync(settingsFile, JSON.stringify(settings));
+  assert.equal(installer.isCurrent(), false);
+  installer.install({ nodePath: installer.hookNodePath() });
+  assert.equal(installer.isCurrent(), true);
+  const after = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+  assert.ok(after.hooks.PermissionRequest[0].hooks[0].timeout > 60);
+  assert.equal(after.hooks.PostToolUse[0].hooks[0].command, '/usr/local/bin/my-lint.sh', 'the user’s hooks stay');
+});
+
 test('skills are written with absolute paths', () => {
   const pet = fs.readFileSync(path.join(claudeDir, 'skills', 'pet', 'SKILL.md'), 'utf8');
   assert.match(pet, /"\/opt\/node\/bin\/node" ".*claude-pet\.js" pet \$ARGUMENTS/);

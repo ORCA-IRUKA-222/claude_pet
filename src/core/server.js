@@ -95,7 +95,7 @@ function startServer({
           const event = body && body.event;
           if (!event || typeof event !== 'object' || !NONCE.test(String(body.nonce || '')))
             return send(res, 400, { error: 'bad request' });
-          onEvent(event);
+          onEvent(event, { permission: Boolean(onPermission && secret) });
           if (!onPermission || !secret) return send(res, 200, {});
           // The hook gives up (or Claude Code kills it) → stop waiting for an answer.
           const controller = new AbortController();
