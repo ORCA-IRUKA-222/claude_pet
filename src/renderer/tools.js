@@ -15,11 +15,44 @@ const PetTools = (() => {
     memoFilter: 'all',
     memoExpanded: null,
     memoEditing: null,
-    memoDraft: '',
-    memoFocus: false,
+    memoDraft: '', // what is typed in the new-memo box
+    memoEditText: null, // what is typed while editing memoEditing
     calSetup: false,
+    calInput: '',
     calError: '',
   };
+  // what you type isn't part of a view's shape: the boxes already show it
+  const TYPED = new Set(['timerInput', 'memoDraft', 'memoEditText', 'calInput']);
+  const DRAFT_KEY = 'claude-pet.memo-draft';
+  let lastRender = null; // what the tool tab last drew, to skip redrawing the same thing
+  let composing = false; // an IME is composing in one of the boxes
+  let redrawAfterIme = false;
+
+  /** Memo drafts survive a reload or restart of the pet (they live only on this computer). */
+  function saveDrafts() {
+    try {
+      localStorage.setItem(
+        DRAFT_KEY,
+        JSON.stringify({ draft: view.memoDraft, editing: view.memoEditing, editText: view.memoEditText }),
+      );
+    } catch {
+      // no storage: the draft still survives redraws
+    }
+  }
+
+  function loadDrafts() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null');
+      if (!saved) return;
+      if (typeof saved.draft === 'string') view.memoDraft = saved.draft;
+      if (typeof saved.editing === 'string' && typeof saved.editText === 'string') {
+        view.memoEditing = saved.editing;
+        view.memoEditText = saved.editText;
+      }
+    } catch {
+      // unreadable: start empty
+    }
+  }
 
   const PRESETS = [1, 3, 5, 10, 25];
 
@@ -121,6 +154,7 @@ const PetTools = (() => {
 
     const form = el('form', 'tool-form');
     const input = el('input', 'tool-input');
+    input.dataset.field = 'timer-custom';
     input.type = 'text';
     input.placeholder = t('timer.custom');
     input.value = view.timerInput;
@@ -275,24 +309,34 @@ const PetTools = (() => {
     const main = el('div', 'memo-main');
     if (view.memoEditing === m.id) {
       const area = el('textarea', 'memo-edit');
-      area.value = m.text;
+      area.dataset.field = 'memo-edit';
+      area.value = view.memoEditText ?? m.text;
       area.rows = 3;
       area.addEventListener('keydown', (e) => e.stopPropagation());
+      area.addEventListener('input', () => {
+        view.memoEditText = area.value;
+        saveDrafts();
+      });
       main.appendChild(area);
+      const stopEditing = () => {
+        view.memoEditing = null;
+        view.memoEditText = null;
+        saveDrafts();
+      };
       main.appendChild(
         row(
           'memo-actions',
           button(t('memo.save'), async () => {
-            if (await memo({ action: 'update', id: m.id, changes: { text: area.value } })) view.memoEditing = null;
+            if (await memo({ action: 'update', id: m.id, changes: { text: area.value } })) stopEditing();
             ctx.rerender();
           }),
           button(t('memo.cancel'), () => {
-            view.memoEditing = null;
+            stopEditing();
             ctx.rerender();
           }),
         ),
       );
-      requestAnimationFrame(() => area.focus());
+      if (view.memoEditText == null) requestAnimationFrame(() => area.focus());
     } else {
       const text = el('div', 'memo-text', m.text);
       text.addEventListener('click', () => {
@@ -315,6 +359,7 @@ const PetTools = (() => {
             }),
             button(t('memo.edit'), () => {
               view.memoEditing = m.id;
+              view.memoEditText = null;
               ctx.rerender();
             }),
             button(t('memo.delete'), () => memo({ action: 'remove', id: m.id }), 'text-button danger'),
@@ -329,23 +374,28 @@ const PetTools = (() => {
   function renderMemoTab(container) {
     const form = el('form', 'memo-form');
     const input = el('textarea', 'memo-input');
+    input.dataset.field = 'memo-new';
     input.rows = 2;
     input.placeholder = t('memo.placeholder');
     input.value = view.memoDraft;
     input.addEventListener('input', () => {
       view.memoDraft = input.value;
+      saveDrafts();
       ctx.reportSize();
     });
     const submit = async () => {
       const text = input.value.trim();
       if (!text) return;
-      view.memoFocus = true; // the list re-renders when the memo is saved; keep typing
-      if (await memo({ action: 'add', text })) view.memoDraft = '';
+      // cleared first: the saved list can arrive (and redraw the box) before the reply
+      view.memoDraft = '';
+      input.value = '';
+      saveDrafts();
+      if (!(await memo({ action: 'add', text }))) {
+        view.memoDraft = text;
+        saveDrafts();
+        ctx.rerender();
+      }
     };
-    if (view.memoFocus) {
-      view.memoFocus = false;
-      requestAnimationFrame(() => input.focus());
-    }
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
@@ -416,9 +466,12 @@ const PetTools = (() => {
     box.appendChild(el('p', 'tool-note', t('cal.setupHelp')));
     const form = el('form', 'tool-form');
     const input = el('input', 'tool-input');
+    input.dataset.field = 'cal-url';
     input.type = 'url';
     input.placeholder = t('cal.urlPlaceholder');
     input.spellcheck = false;
+    input.value = view.calInput;
+    input.addEventListener('input', () => (view.calInput = input.value));
     form.appendChild(input);
     const save = el('button', 'pill-button primary', t('cal.save'));
     save.type = 'submit';
@@ -437,6 +490,7 @@ const PetTools = (() => {
       if (res && res.ok) {
         view.calSetup = false;
         view.calError = '';
+        view.calInput = '';
         setCalendar(res.calendar);
       } else {
         view.calError = t('cal.invalidUrl');
@@ -542,11 +596,44 @@ const PetTools = (() => {
     data.calendar = snapshot;
   }
 
+  /** Everything a tab draws from, except what is typed into it. */
+  function shapeOf(tab) {
+    const shown = tab === 'timer' ? data.timers : tab === 'memo' ? data.memos : data.calendar;
+    const shape = Object.fromEntries(Object.entries(view).filter(([k]) => !TYPED.has(k)));
+    // the calendar's "now" moves with the clock, memo times with the day
+    const clock = tab === 'calendar' ? Math.floor(Date.now() / 60e3) : new Date().toDateString();
+    return JSON.stringify([tab, ctx.language(), shape, shown, clock]);
+  }
+
+  /**
+   * Draw a tab. The panel redraws on every change in the pet (a hook event, a new pet, a
+   * message), so a tab is only drawn again when something it shows changed, and a box you
+   * are typing in keeps its text, focus and cursor; it waits while an IME is composing.
+   */
   function render(tab, container) {
+    const shape = shapeOf(tab);
+    if (lastRender && lastRender.container === container && lastRender.shape === shape && container.firstChild) return;
+    const active = document.activeElement;
+    const typing = active && container.contains(active) && active.dataset.field ? active : null;
+    if (typing && composing) {
+      redrawAfterIme = true;
+      return;
+    }
+    const caret = typing && { field: typing.dataset.field, start: typing.selectionStart, end: typing.selectionEnd };
+    lastRender = { container, shape };
     container.replaceChildren();
     if (tab === 'timer') renderTimerTab(container);
     else if (tab === 'memo') renderMemoTab(container);
     else if (tab === 'calendar') renderCalendarTab(container);
+    const again = caret && container.querySelector(`[data-field="${caret.field}"]`);
+    if (again) {
+      again.focus();
+      try {
+        again.setSelectionRange(caret.start, caret.end);
+      } catch {
+        // some input types have no cursor
+      }
+    }
   }
 
   /** Something is counting in the timer tab (shown as a dot on the tab). */
@@ -557,6 +644,19 @@ const PetTools = (() => {
 
   function init(context) {
     ctx = context;
+    loadDrafts();
+    document.addEventListener('compositionstart', () => (composing = true), true);
+    document.addEventListener(
+      'compositionend',
+      () => {
+        composing = false;
+        if (!redrawAfterIme) return;
+        redrawAfterIme = false;
+        // after the composed text is in the box (and in its draft)
+        setTimeout(() => ctx.rerender(), 0);
+      },
+      true,
+    );
   }
 
   return { init, render, tick, setTimers, setMemos, setCalendar, busy, data };

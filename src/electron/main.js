@@ -45,11 +45,13 @@ const { findClaude, isClaudeExecutable } = require('../core/claude-path');
 const { RelayListener } = require('../core/relay');
 const { loadCloudSessions, saveCloudSessions } = require('../core/cloud-store');
 const { loadDismissed, saveDismissed } = require('../core/dismissed-store');
+const { MediaControl } = require('../core/media');
 const { cloneRepo, remember, listGitHubRepos, isCloned } = require('../core/repos');
 const { version } = require('../../package.json');
 const { buildId } = require('../shared/build');
 
 const SCALES = { small: 0.5, medium: 0.75, large: 1 };
+const SOUND_VOLUMES = ['high', 'normal', 'low', 'off'];
 const DND_MINUTES = [30, 60, 120];
 const TURN_OVER = new Set(['UserPromptSubmit', 'Stop', 'StopFailure', 'SessionEnd']);
 const MAX_SCREENSHOTS = 20;
@@ -137,6 +139,7 @@ const timeKeeper = new TimeKeeper({ pomodoro: config.pomodoro });
 const modes = new Modes({ dnd: config.dnd });
 const memos = new MemoStore();
 const calendar = new CalendarFeed({ fetch: (url, init) => net.fetch(url, init) });
+const media = new MediaControl(); // the music widget
 const permissions = new PermissionBroker({
   timeoutMs: permissionTimeoutMs(config),
   allowAll: config.permissionPrompt.allowAll === true,
@@ -190,6 +193,9 @@ function rendererConfig() {
     home: app.getPath('home'),
     greetings: config.greetings !== false,
     permissionPrompt: config.permissionPrompt.enabled !== false,
+    soundVolume: SOUND_VOLUMES.includes(config.sound.volume) ? config.sound.volume : 'normal',
+    ringSeconds: Number(config.sound.ringSeconds) > 0 ? Number(config.sound.ringSeconds) : 60,
+    musicWidget: config.music.widget === true,
   };
 }
 
@@ -482,6 +488,29 @@ function buildMenu() {
       })),
     },
     { label: t('menu.mini'), type: 'checkbox', checked: config.mini, click: (item) => setMini(item.checked) },
+    {
+      label: t('menu.music'),
+      type: 'checkbox',
+      checked: config.music.widget === true,
+      click: (item) => setMusicWidget(item.checked),
+    },
+    {
+      label: t('menu.sound'),
+      submenu: [
+        ...SOUND_VOLUMES.map((v) => ({
+          label: t(`menu.sound.${v}`),
+          type: 'radio',
+          checked: rendererConfig().soundVolume === v,
+          click: () => {
+            persist({ sound: { ...config.sound, volume: v } });
+            sendToRenderer('config', rendererConfig());
+            if (v !== 'off') sendToRenderer('command', { type: 'chime' });
+          },
+        })),
+        { type: 'separator' },
+        { label: t('menu.sound.test'), click: () => sendToRenderer('command', { type: 'chime' }) },
+      ],
+    },
     {
       label: t('menu.bubble'),
       type: 'checkbox',
@@ -784,6 +813,13 @@ function handleEvent(event) {
   // A pause that never reached a tool call shouldn't stop the next turn.
   if (TURN_OVER.has(event.event) && typeof event.session_id === 'string') cancelPause(event.session_id);
   tracker.handle(event);
+}
+
+function setMusicWidget(on) {
+  persist({ music: { ...config.music, widget: Boolean(on) } });
+  if (!on) media.stop(); // the Windows helper goes until the widget is back
+  sendToRenderer('config', rendererConfig());
+  updateTray();
 }
 
 /**
@@ -1315,6 +1351,19 @@ function registerIpc() {
       return { ok: false, error: err.message };
     }
   });
+  // the music widget: what plays, and ⏮ ⏯ ⏭
+  ipcMain.handle('media-status', () => media.status());
+  ipcMain.handle('media-command', async (_e, action) => {
+    try {
+      await media.command(String(action));
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    // the player takes a moment to show the next song
+    await new Promise((r) => setTimeout(r, 400));
+    return { ok: true, status: await media.status() };
+  });
+  ipcMain.on('music-widget', (_e, on) => setMusicWidget(Boolean(on)));
   ipcMain.handle('memo', (_e, { action, id, text, cwd, changes }) => {
     try {
       if (action === 'add') memos.add({ text, cwd });
@@ -1468,6 +1517,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     quitting = true;
     quickChat.stop();
+    media.stop();
     permissions.cancelAll();
     clearTimeout(saveTimer);
     saveConfig(config);
