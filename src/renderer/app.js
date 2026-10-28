@@ -29,6 +29,10 @@ const ui = {
   sessionsEmpty: $('sessions-empty'),
   setupHint: $('setup-hint'),
   autoBanner: $('auto-banner'),
+  music: $('music'),
+  musicTitle: $('music-title'),
+  musicArtist: $('music-artist'),
+  musicPlay: $('music-play'),
   tabSessions: $('tab-sessions'),
   tabChat: $('tab-chat'),
   tabTools: $('tab-tools'),
@@ -195,26 +199,161 @@ function isWorking(s) {
 
 // ------------------------------------------------------------------ sound
 
+const VOLUMES = { high: 0.9, normal: 0.55, low: 0.25, off: 0 };
+// notes as [start in seconds, frequency in Hz]
+const TUNES = {
+  alarm: [
+    [0, 1046.5],
+    [0.16, 1318.5],
+    [0.32, 1568],
+    [0.48, 2093],
+  ], // a rising bell, rung again and again
+  focus: [
+    [0, 784],
+    [0.2, 1046.5],
+  ],
+  break: [
+    [0, 1318.5],
+    [0.22, 1046.5],
+    [0.44, 784],
+  ],
+  reminder: [
+    [0, 880],
+    [0.3, 880],
+  ],
+};
 let audio = null;
-function beep(times = 1) {
+let master = null;
+let ringTimer = null;
+
+function audioOut() {
+  if (!audio) {
+    audio = new AudioContext();
+    // overlapping notes are kept from clipping
+    const limiter = audio.createDynamicsCompressor();
+    limiter.threshold.value = -10;
+    limiter.connect(audio.destination);
+    master = audio.createGain();
+    master.connect(limiter);
+  }
+  // a sleep or a new audio device can leave it suspended
+  if (audio.state !== 'running') audio.resume().catch(() => {});
+  return audio;
+}
+
+/** A bell-like note: a few harmonics that ring out. */
+function bell(ctx, at, freq, length = 1.4) {
+  for (const [ratio, level] of [
+    [1, 0.6],
+    [2, 0.22],
+    [3, 0.08],
+  ]) {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq * ratio;
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(level, at + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + length / ratio);
+    osc.connect(gain).connect(master);
+    osc.start(at);
+    osc.stop(at + length);
+  }
+}
+
+/** Play one of TUNES at the volume set in the menu (タイマーの音). */
+function chime(name) {
+  const volume = VOLUMES[state.config.soundVolume] ?? VOLUMES.normal;
+  if (!volume || !TUNES[name]) return;
   try {
-    audio = audio || new AudioContext();
-    const start = audio.currentTime + 0.02;
-    for (let i = 0; i < times; i++) {
-      const osc = audio.createOscillator();
-      const gain = audio.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = i % 2 ? 660 : 880;
-      const at = start + i * 0.32;
-      gain.gain.setValueAtTime(0.0001, at);
-      gain.gain.exponentialRampToValueAtTime(0.2, at + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.25);
-      osc.connect(gain).connect(audio.destination);
-      osc.start(at);
-      osc.stop(at + 0.27);
-    }
+    const ctx = audioOut();
+    master.gain.value = volume;
+    const start = ctx.currentTime + 0.05;
+    for (const [offset, freq] of TUNES[name]) bell(ctx, start + offset, freq);
   } catch {
     // no audio device
+  }
+}
+
+/** A finished timer rings until its message is dismissed, for ringSeconds at most. */
+function ring() {
+  stopRinging();
+  chime('alarm');
+  const until = Date.now() + (state.config.ringSeconds || 60) * 1000;
+  ringTimer = setInterval(() => (Date.now() > until ? stopRinging() : chime('alarm')), 2200);
+}
+
+function stopRinging() {
+  clearInterval(ringTimer);
+  ringTimer = null;
+}
+
+// ------------------------------------------------------------------ music widget
+
+const music = { status: null, timer: null, busy: false };
+
+function musicShown() {
+  return Boolean(state.config.musicWidget) && !state.config.mini;
+}
+
+/** What the widget says: the song and who sings it, or why there's nothing to show. */
+function musicText(s) {
+  if (!s) return [t('music.loading'), ''];
+  if (!s.available) return [t(s.error === 'missing' ? 'music.missing' : 'music.unavailable'), ''];
+  if (!s.session) return [t('music.nothing'), s.controls === false ? t('music.keysOnly') : ''];
+  return [s.title || t('music.untitled'), [s.artist, s.app].filter(Boolean).join(' · ')];
+}
+
+function renderMusic() {
+  const shown = musicShown();
+  ui.music.hidden = !shown;
+  if (!shown) return;
+  const s = music.status;
+  const [title, artist] = musicText(s);
+  ui.musicTitle.textContent = title;
+  ui.musicTitle.title = artist ? `${title}\n${artist}` : title;
+  ui.musicArtist.textContent = artist;
+  ui.musicArtist.hidden = !artist;
+  const playing = Boolean(s && s.playing);
+  ui.musicPlay.textContent = playing ? '⏸\ufe0e' : '▶\ufe0e'; // text glyphs, not color emoji
+  ui.music.classList.toggle('playing', playing);
+}
+
+async function refreshMusic() {
+  if (!musicShown() || document.hidden || music.busy) return;
+  try {
+    music.status = await api.mediaStatus();
+  } catch {
+    music.status = { available: false };
+  }
+  renderMusic();
+  reportSize();
+}
+
+async function musicCommand(action) {
+  if (music.busy) return;
+  music.busy = true;
+  ui.music.classList.add('busy');
+  try {
+    const res = await api.mediaCommand(action);
+    if (res && res.status) music.status = res.status;
+  } finally {
+    music.busy = false;
+    ui.music.classList.remove('busy');
+  }
+  renderMusic();
+  reportSize();
+}
+
+/** Ask what plays every few seconds while the widget is out. */
+function syncMusicPolling() {
+  const shown = musicShown();
+  if (shown && !music.timer) {
+    refreshMusic();
+    music.timer = setInterval(refreshMusic, 3000);
+  } else if (!shown && music.timer) {
+    clearInterval(music.timer);
+    music.timer = null;
   }
 }
 
@@ -266,6 +405,7 @@ function showToast(title, sub, ms = 6000, { sticky = false } = {}) {
 }
 
 function dismissToast() {
+  stopRinging();
   if (!state.toast) return false;
   clearTimeout(toastTimer);
   state.toast = null;
@@ -714,6 +854,7 @@ function render() {
   renderBadge();
   renderMood();
   renderBubble();
+  renderMusic();
   renderPanel();
   renderComposer();
   reportSize();
@@ -1127,7 +1268,7 @@ function handleAlarm(a) {
     if (line) showToast(line.text, a.label ? `⏰ ${a.label}` : '', 0, { sticky: true });
     else say(a.label ? t('timer.doneLabel', { label: a.label }) : t('timer.done'), { sticky: true });
     playOnce('jumping', 4);
-    beep(3);
+    ring();
   } else if (a.kind === 'pomodoro') {
     const vars = { min: a.minutes };
     if (a.to === 'focus') say((speak('focus', vars) || { text: t('pomo.focusStart', vars) }).text, { duration: 7000 });
@@ -1135,12 +1276,12 @@ function handleAlarm(a) {
     else say(t('pomo.finished'), { duration: 4000 });
     if (a.from) {
       playOnce(a.to === 'focus' ? 'waving' : 'jumping', 2);
-      beep(a.to === 'focus' ? 1 : 2);
+      chime(a.to === 'focus' ? 'focus' : a.to ? 'break' : 'alarm');
     }
   } else if (a.kind === 'calendar') {
     say(t('cal.reminder', { min: a.minutes, title: a.title || t('cal.untitled') }), { duration: 30000 });
     playOnce('waving', 3);
-    beep(1);
+    chime('reminder');
   }
 }
 
@@ -1279,6 +1420,11 @@ function setupControls() {
   }
   $('mark-all').addEventListener('click', () => api.markAllRead());
   $('auto-banner-stop').addEventListener('click', () => api.setAllowAll(false));
+  $('music-previous').addEventListener('click', () => musicCommand('previous'));
+  $('music-play').addEventListener('click', () => musicCommand('play-pause'));
+  $('music-next').addEventListener('click', () => musicCommand('next'));
+  $('music-close').addEventListener('click', () => api.setMusicWidget(false));
+  document.addEventListener('visibilitychange', () => refreshMusic());
   $('new-chat').addEventListener('click', newChat);
   $('chat-new').addEventListener('click', newChat);
   $('chat-stop').addEventListener('click', () => api.quickStop());
@@ -1399,6 +1545,7 @@ function applyConfig(config) {
   if (!state.chat.cwd) state.chat.cwd = config.quickChatCwd;
   if (!state.chat.messages.length && config.quickChatTarget) state.chat.target = config.quickChatTarget;
   if (scaleChanged && state.pet) sprite.setPet(state.pet, config.scale);
+  syncMusicPolling();
   render();
 }
 
@@ -1460,6 +1607,7 @@ async function boot() {
     if (line) state.sceneLine = { id: session.id, status: to, text: line.text };
   });
   api.on('command', (cmd) => {
+    if (cmd.type === 'chime') chime('alarm');
     if (cmd.type === 'panel') openPanel(cmd.tab);
     if (cmd.type === 'quickchat') {
       openPanel('chat');

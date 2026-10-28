@@ -64,6 +64,13 @@ const DEFAULTS = {
     enabled: true, // answer Claude Code's permission prompts from the pet
     timeoutSeconds: 120, // after this the prompt is left to the terminal
   },
+  sound: {
+    volume: 'normal', // timer and pomodoro sounds: 'high' | 'normal' | 'low' | 'off'
+    ringSeconds: 60, // a finished timer rings until stopped, at most this long
+  },
+  music: {
+    widget: false, // the now-playing bar with ⏮ ⏯ ⏭ above the pet
+  },
   pomodoro: {
     focusMinutes: 25,
     breakMinutes: 5,

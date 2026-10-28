@@ -67,6 +67,9 @@ contextBridge.exposeInMainWorld('pet', {
   // Tools
   timer: (action, value) => ipcRenderer.invoke('timer', { action, value }),
   memo: (request) => ipcRenderer.invoke('memo', request),
+  mediaStatus: () => ipcRenderer.invoke('media-status'),
+  mediaCommand: (action) => ipcRenderer.invoke('media-command', action),
+  setMusicWidget: (on) => ipcRenderer.send('music-widget', on),
   calendarSetUrl: (url) => ipcRenderer.invoke('calendar-set-url', url),
   calendarRefresh: () => ipcRenderer.send('calendar-refresh'),
 });
