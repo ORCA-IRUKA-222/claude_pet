@@ -497,3 +497,12 @@ npm run build:pet    # tools/designs/mochi.js から pets/mochi とアイコン�
 | `tools/` | ピクセルアートの描画とスプライトシートの書き出し |
 | `skills/` | `/pet`・`/hatch-pet`・`/pet-lines` のひな形 |
 | `src/core/lines.js`, `src/shared/lines.js` | ペットのセリフ（読み込みと、場面ごとに選ぶ処理） |
+
+## ライセンス
+
+Copyright (c) 2026 ORCA. All Rights Reserved.
+
+このリポジトリは参照・透明性のために公開していますが、オープンソースでは
+ありません。閲覧と、個人的・非商用での利用は自由です。再配布や商用利用
+（マーケットプレイスでの公開・販売を含む）には、著作権者の事前の許可が
+必要です。詳しくは [LICENSE](LICENSE) を参照してください。
