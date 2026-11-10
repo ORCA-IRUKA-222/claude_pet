@@ -582,6 +582,14 @@ async function doctor() {
     ...(latest
       ? [['最近使った Claude Code', `${ENTRYPOINTS[latest.entrypoint] || latest.entrypoint} ${latest.version || ''}`.trim()]]
       : []),
+    [
+      '許可のボタン',
+      config.permissionPrompt.enabled === false
+        ? 'オフ（メニューの「ペットで許可を出す」をオンにしてください）'
+        : config.permissionPrompt.allowAll
+          ? 'すべて自動で許可中（ボタンは出ません。メニューの「すべて自動で許可する」をオフにすると出ます）'
+          : 'オン',
+    ],
     ['自動起動', autostart.isEnabled() ? 'オン' : 'オフ'],
     ['クラウド連携', config.cloud.topic && config.cloud.enabled ? `オン（${config.cloud.server}）` : 'オフ'],
   ];

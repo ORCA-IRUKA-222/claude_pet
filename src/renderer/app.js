@@ -521,6 +521,8 @@ function moodIcon() {
   if (m.away) return ['💤', t('mode.away')];
   if (m.dnd) return ['🔕', t('mode.dnd')];
   if (m.focus) return ['🍅', t('mode.focus')];
+  // with everything allowed no 許可 button ever shows, so the pet itself says so
+  if (state.autoAllow.all) return ['⚡', t('perm.autoAll')];
   if (state.mood.tired) return ['🔋', ''];
   if (state.mood.night && state.config.greetings) return ['🌙', ''];
   return ['', ''];

@@ -945,9 +945,24 @@ function setAllowAll(on) {
   updateTray();
 }
 
-function handlePermission(event, options) {
-  if (config.permissionPrompt.enabled === false) return null;
-  return permissions.request(event, options);
+/** For pet.log: what asked and what happened, so "no buttons" can be explained afterwards. */
+function permissionNote(event) {
+  return `${event.tool_name || 'tool'} (${String(event.session_id || '').slice(0, 8)})`;
+}
+
+async function handlePermission(event, options) {
+  if (config.permissionPrompt.enabled === false) {
+    log(`permission asked ${permissionNote(event)}: not shown, "ペットで許可を出す" is off in the menu`);
+    return null;
+  }
+  const auto = permissions.autoAllows(event);
+  const decision = await permissions.request(event, options);
+  log(
+    `permission asked ${permissionNote(event)}: ${
+      auto ? 'allowed automatically' : decision ? `answered in the pet: ${decision.behavior}` : 'left to the terminal'
+    }`,
+  );
+  return decision;
 }
 
 // ---------------------------------------------------------------- away / power
