@@ -33,6 +33,7 @@ const rotation = require('../core/rotation');
 const { openInTerminal, openCloudTask } = require('../core/terminal');
 const { openInEditor } = require('../core/editor');
 const { linesFor } = require('../core/lines');
+const PetLines = require('../shared/lines');
 const { TimeKeeper } = require('../core/timers');
 const { Modes } = require('../core/modes');
 const { MemoStore } = require('../core/memos');
@@ -876,16 +877,26 @@ function notify(title, body = '', { silent = false, session = null, kind = null,
   const mode = notifyMode();
   if (mode === 'off') return;
   const speak = mode !== 'system' && petCanSpeak();
+  // The pet says it in its own voice when it has lines for the scene (the lines of
+  // ~/.claude-pet/lines, made with /pet-lines); the session and what happened follow.
+  const project = session ? session.title || session.project : null;
+  const line = session && kind && project ? PetLines.pick(linesFor(pet), kind, { project }) : null;
+  const heading = line ? line.text : String(title);
+  // the session's name is left out of the detail when the line already says it
+  const detail = line ? [line.uses.includes('project') ? null : project, body].filter(Boolean).join(' — ') : String(body);
   if (speak && !spoken) {
     sendToRenderer('notify', {
-      title: String(title),
-      body: String(body).slice(0, 300),
+      title: heading,
+      body: detail.slice(0, 300),
       kind,
       sessionId: session ? session.id : null,
+      said: Boolean(line),
     });
   }
   const system = mode === 'system' || mode === 'both' || !speak;
-  if (system && Notification.isSupported()) new Notification({ title, body: String(body).slice(0, 200), silent }).show();
+  if (system && Notification.isSupported()) {
+    new Notification({ title: heading, body: detail.slice(0, 200), silent }).show();
+  }
 }
 
 function setNotifyMode(mode) {

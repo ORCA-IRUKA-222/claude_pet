@@ -1612,8 +1612,10 @@ async function boot() {
     state.lines = lines || {};
   });
   // 通知: the pet says what happened (a session finished, needs you, or stopped)
-  api.on('notify', ({ title, body, kind, sessionId }) => {
+  api.on('notify', ({ title, body, kind, sessionId, said }) => {
     showToast(title, firstLine(body, 160), kind === 'waiting' ? 15000 : 8000, { sessionId });
+    // what the pet said stays in the bubble after the notice, as it does for any scene line
+    if (said && sessionId) state.sceneLine = { id: sessionId, status: kind, text: title };
     if (kind === 'waiting' || kind === 'failed') chime('reminder');
     if (kind !== 'ready') playOnce('waving', 2); // a finished turn already makes the pet jump
   });
