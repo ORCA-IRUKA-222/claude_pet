@@ -410,7 +410,7 @@ Codex 形式のペット（`pet.json` + `spritesheet.webp|png`、192x208 のセ�
 | `scale` | `0.5` | 大きさ（0.5 / 0.75 / 1） |
 | `mini` | `false` | ミニ表示 |
 | `showBubble` | `true` | 吹き出しを表示 |
-| `notifications` | `false` | 入力待ち・完了・エラーでデスクトップ通知 |
+| `notifyMode` | 未設定 | 入力待ち・完了・エラーの知らせ方。`pet`（ペットの吹き出し）/ `system`（システム通知）/ `both` / `off`。未設定なら `pet`（古い `notifications: true` の人は `both`）。右クリックメニューの「通知のしかた」で変えられます |
 | `language` | `"ja"` | `"ja"` または `"en"` |
 | `shortcuts.toggle` / `shortcuts.quickChat` / `shortcuts.screenshot` | `CommandOrControl+Alt+P` / `+C` / `+S` | グローバルショートカット（空文字で無効） |
 | `quickChat.permissionMode` | `"default"` | クイックチャットの権限モード（`plan`, `acceptEdits` など） |

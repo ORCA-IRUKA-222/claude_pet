@@ -46,6 +46,7 @@ const { RelayListener } = require('../core/relay');
 const { loadCloudSessions, saveCloudSessions } = require('../core/cloud-store');
 const { loadDismissed, saveDismissed } = require('../core/dismissed-store');
 const { MediaControl } = require('../core/media');
+const { log } = require('../core/log');
 const { cloneRepo, remember, listGitHubRepos, isCloned } = require('../core/repos');
 const { version } = require('../../package.json');
 const { buildId } = require('../shared/build');
@@ -284,25 +285,67 @@ function createWindow() {
     return { action: 'deny' };
   });
   win.webContents.on('will-navigate', (e) => e.preventDefault());
+  // Closing the window (Alt+F4, or Windows closing it while shutting down) only hides the pet
+  // for now. It isn't remembered: a shutdown that closed the window used to be saved as
+  // "hidden", and the pet then stayed away at the next sign-in. 隠す in the menu is remembered.
   win.on('close', (e) => {
     if (!quitting) {
       e.preventDefault();
-      setVisible(false);
+      log('window closed: hidden for now (not remembered)');
+      win.hide();
+      updateTray();
     }
   });
-
-  win.loadFile(path.join(APP_ROOT, 'src', 'renderer', 'index.html'));
-  win.once('ready-to-show', () => {
-    if (config.visible) win.showInactive();
+  win.on('session-end', () => {
+    quitting = true; // Windows is signing out or shutting down
+    log('session end');
   });
+
+  // The page can fail to load, or its process die, while Windows is still starting up.
+  let loadTries = 0;
+  const load = () => win.loadFile(path.join(APP_ROOT, 'src', 'renderer', 'index.html'));
+  win.webContents.on('did-fail-load', (_e, code, description, _url, isMainFrame) => {
+    if (!isMainFrame || code === -3) return; // -3: a navigation that was cancelled
+    log(`page failed to load: ${description} (${code})`);
+    if (++loadTries <= 5 && win && !win.isDestroyed()) setTimeout(() => !win.isDestroyed() && load(), 1000 * loadTries);
+  });
+  win.webContents.on('render-process-gone', (_e, details) => {
+    log(`page process gone: ${details.reason}`);
+    if (details.reason !== 'clean-exit' && win && !win.isDestroyed()) setTimeout(() => !win.isDestroyed() && load(), 500);
+  });
+  load();
+
+  // Normally shown once the page is ready; if that never comes (a slow or struggling start),
+  // it is shown anyway.
+  let shown = false;
+  const showFirst = (why) => {
+    if (shown || !win || win.isDestroyed()) return;
+    shown = true;
+    clearTimeout(shownTimer);
+    if (config.visible) {
+      win.showInactive();
+      log(`window shown (${why})`);
+    } else log('window not shown: hidden in the menu last time');
+  };
+  const shownTimer = setTimeout(() => showFirst('page not ready after 6 s'), 6000);
+  win.once('ready-to-show', () => showFirst('ready'));
 }
 
 function setVisible(visible) {
-  if (!win) return;
-  if (visible) win.showInactive();
-  else win.hide();
+  if (!win || win.isDestroyed()) return;
+  if (visible) {
+    applyBounds(win.getBounds().width, win.getBounds().height); // back on a screen that is there
+    win.showInactive();
+  } else win.hide();
   persist({ visible });
   updateTray();
+}
+
+/** Keep the pet on a screen that exists (a monitor unplugged, a dock, waking from sleep). */
+function keepOnScreen() {
+  if (!win || win.isDestroyed()) return;
+  const { width, height } = win.getBounds();
+  applyBounds(width, height);
 }
 
 function setMini(mini) {
@@ -521,10 +564,13 @@ function buildMenu() {
       },
     },
     {
-      label: t('menu.notifications'),
-      type: 'checkbox',
-      checked: config.notifications,
-      click: (item) => persist({ notifications: item.checked }),
+      label: t('menu.notify'),
+      submenu: NOTIFY_MODES.map((mode) => ({
+        label: t(`menu.notify.${mode}`),
+        type: 'radio',
+        checked: notifyMode() === mode,
+        click: () => setNotifyMode(mode),
+      })),
     },
     {
       label: t('menu.permissionPrompt'),
@@ -789,9 +835,49 @@ function openQuickChat() {
 
 // ---------------------------------------------------------------- notifications
 
-function notify(title, body = '', { silent = false } = {}) {
-  if (!Notification.isSupported()) return;
-  new Notification({ title, body: String(body).slice(0, 200), silent }).show();
+const NOTIFY_MODES = ['pet', 'system', 'both', 'off'];
+
+/** How you are told. Before this setting, desktop notifications on meant the system ones. */
+function notifyMode() {
+  if (NOTIFY_MODES.includes(config.notifyMode)) return config.notifyMode;
+  return config.notifications === true ? 'both' : 'pet';
+}
+
+/** The pet can say it only while its bubble can be seen (not hidden, not the mini label). */
+function petCanSpeak() {
+  return Boolean(win && !win.isDestroyed() && win.isVisible() && !config.mini && config.showBubble !== false);
+}
+
+/**
+ * Tell the user something: as a speech bubble from the pet, as a system notification, or both
+ * (menu 通知). In the bubble-only mode a system notification still goes out while the pet
+ * can't speak (hidden, or the mini label), so nothing is lost.
+ *
+ * `session`: what this is about (the bubble opens it when clicked). `spoken`: the pet already
+ * says it itself (timers, reminders), so only the system side is decided here.
+ */
+function notify(title, body = '', { silent = false, session = null, kind = null, spoken = false } = {}) {
+  const mode = notifyMode();
+  if (mode === 'off') return;
+  const speak = mode !== 'system' && petCanSpeak();
+  if (speak && !spoken) {
+    sendToRenderer('notify', {
+      title: String(title),
+      body: String(body).slice(0, 300),
+      kind,
+      sessionId: session ? session.id : null,
+    });
+  }
+  const system = mode === 'system' || mode === 'both' || !speak;
+  if (system && Notification.isSupported()) new Notification({ title, body: String(body).slice(0, 200), silent }).show();
+}
+
+function setNotifyMode(mode) {
+  if (!NOTIFY_MODES.includes(mode)) return notifyMode();
+  persist({ notifyMode: mode });
+  sendToRenderer('config', rendererConfig());
+  updateTray();
+  return mode;
 }
 
 function notifyTransition({ session, to }) {
@@ -800,9 +886,13 @@ function notifyTransition({ session, to }) {
   if (attention) modes.record(to);
   const held = attention && modes.holds(to);
   sendToRenderer('transition', { session, to, held });
-  if (!attention || held || !config.notifications) return;
+  if (!attention || held) return;
   const body = to === 'ready' ? session.message || '' : session.detail || session.message || '';
-  notify(t(`notify.${to}`, { project: session.title || session.project }), body, { silent: to === 'ready' });
+  notify(t(`notify.${to}`, { project: session.title || session.project }), body, {
+    silent: to === 'ready',
+    session,
+    kind: to,
+  });
 }
 
 // ---------------------------------------------------------------- hook events
@@ -884,6 +974,7 @@ function watchPower() {
   powerMonitor.on('unlock-screen', () => {
     power.locked = false;
     checkAway();
+    keepOnScreen();
   });
   powerMonitor.on('suspend', () => {
     power.suspended = true;
@@ -893,6 +984,7 @@ function watchPower() {
     power.suspended = false;
     checkAway();
     refreshCalendar();
+    keepOnScreen();
   });
   setInterval(checkAway, 15e3).unref();
 }
@@ -907,13 +999,13 @@ function wireTimers() {
   timeKeeper.on('timer-done', ({ label }) => {
     if (win && !win.isVisible()) setVisible(true);
     sendToRenderer('alarm', { kind: 'timer', label });
-    notify(t('notify.timer'), label || '');
+    notify(t('notify.timer'), label || '', { spoken: true });
   });
   timeKeeper.on('pomodoro-phase', ({ from, to }) => {
     const minutes = to ? Math.round(timeKeeper.phaseLength(to) / 60e3) : 0;
     sendToRenderer('alarm', { kind: 'pomodoro', from, to, minutes });
-    if (from === 'focus' && to) notify(t('notify.pomoBreak', { min: minutes }));
-    else if (from && to === 'focus') notify(t('notify.pomoFocus', { min: minutes }));
+    if (from === 'focus' && to) notify(t('notify.pomoBreak', { min: minutes }), '', { spoken: true });
+    else if (from && to === 'focus') notify(t('notify.pomoFocus', { min: minutes }), '', { spoken: true });
   });
 }
 
@@ -970,7 +1062,7 @@ function checkReminders() {
   for (const event of calendar.dueReminders(minutes)) {
     const min = Math.max(1, Math.round((event.start - Date.now()) / 60e3));
     sendToRenderer('alarm', { kind: 'calendar', title: event.summary, start: event.start, minutes: min });
-    notify(t('cal.reminder', { min, title: event.summary || t('cal.untitled') }), event.location || '');
+    notify(t('cal.reminder', { min, title: event.summary || t('cal.untitled') }), event.location || '', { spoken: true });
   }
 }
 
@@ -1413,15 +1505,52 @@ function quit() {
   app.quit();
 }
 
+/** One step of starting up: if it fails the rest still runs, and the pet still appears. */
+function step(name, fn) {
+  try {
+    return fn();
+  } catch (err) {
+    log(`start-up step "${name}" failed: ${err && err.stack ? err.stack : err}`);
+    console.error(`[claude-pet] ${name}:`, err && err.message);
+    return undefined;
+  }
+}
+
+/** The local server; a port still held by an instance that is closing is waited for. */
+async function startServerWhenFree(options) {
+  let last = null;
+  for (let attempt = 0; attempt < 16; attempt++) {
+    try {
+      return await startServer(options);
+    } catch (err) {
+      last = err;
+      if (err.code !== 'EADDRINUSE') break;
+      if (attempt === 0) log(`port ${options.port} is in use, waiting for it`);
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  throw last;
+}
+
 async function boot() {
+  log(`start (version ${version}, ${process.platform}, visible=${config.visible !== false}, pet=${config.pet})`);
   let secret = null;
   try {
     secret = ensureSecret();
   } catch {
     secret = null; // without it, permission prompts simply stay in the terminal
   }
+
+  // The pet first: whatever else fails, it should be on the screen.
+  step('pet', () => {
+    pet = findPet(config.pet);
+  });
+  step('ipc', registerIpc);
+  step('window', createWindow);
+  step('tray', createTray);
+
   try {
-    await startServer({
+    await startServerWhenFree({
       port: getPort(),
       version,
       build: buildId(),
@@ -1440,78 +1569,105 @@ async function boot() {
       getStatus: () => ({ visible: Boolean(win && win.isVisible()), sessions: tracker.list(), aggregate: tracker.aggregate() }),
     });
   } catch (err) {
+    log(`server failed: ${err.message}`);
     dialog.showErrorBox('Claude Pet', `ポート ${getPort()} を使えませんでした: ${err.message}`);
     app.exit(1);
     return;
   }
 
-  pet = findPet(config.pet);
-  if (config.rotation.enabled && !rotationCandidates().includes(pet && pet.key)) rotateNow();
-  else checkRotation();
-  // Checked often so the switch happens on time even after the computer wakes from sleep.
-  setInterval(checkRotation, 30e3).unref();
-  readAutostart();
-  refreshHooks();
-  tracker.on('change', pushState);
-  tracker.on('change', () => relay && saveCloudSoon()); // e.g. a cloud session removed from the list
-  tracker.on('dismissed', (ids) => {
-    try {
-      saveDismissed(ids);
-    } catch (err) {
-      console.error('[claude-pet] dismissed sessions:', err.message);
-    }
+  step('rotation', () => {
+    if (config.rotation.enabled && !rotationCandidates().includes(pet && pet.key)) rotateNow();
+    else checkRotation();
+    // Checked often so the switch happens on time even after the computer wakes from sleep.
+    setInterval(checkRotation, 30e3).unref();
   });
-  // Past Claude Code conversations, so the list isn't empty before the first hook event, and
-  // conversations that went on elsewhere (the Claude app, before the pet started) show up.
-  const loadHistory = () => {
+  step('autostart', readAutostart);
+  step('hooks', refreshHooks);
+  step('tracker', () => {
+    tracker.on('change', pushState);
+    tracker.on('change', () => relay && saveCloudSoon()); // e.g. a cloud session removed from the list
+    tracker.on('dismissed', (ids) => {
+      try {
+        saveDismissed(ids);
+      } catch (err) {
+        console.error('[claude-pet] dismissed sessions:', err.message);
+      }
+    });
+    // Past Claude Code conversations, so the list isn't empty before the first hook event, and
+    // conversations that went on elsewhere (the Claude app, before the pet started) show up.
+    const loadHistory = () => {
+      try {
+        tracker.seed(recentSessions());
+      } catch {
+        // unreadable transcripts shouldn't stop the pet
+      }
+    };
+    loadHistory();
+    setInterval(loadHistory, 2 * 60e3).unref();
+    tracker.on('transition', notifyTransition);
+    setInterval(() => tracker.prune(), 60e3).unref();
+  });
+  step('relay', startRelay);
+  step('permissions', () => permissions.on('change', pushState));
+  step('modes', () => {
+    modes.on('change', () => {
+      saveDnd();
+      pushState();
+    });
+    modes.on('digest', (digest) => {
+      sendToRenderer('digest', { ...digest, cause: digest.reason === 'away' ? awayCause : null });
+      if (digest.reason === 'away') awayCause = null;
+    });
+  });
+  step('timers', wireTimers);
+  step('calendar', () => {
     try {
-      tracker.seed(recentSessions());
+      calendar.setUrl(config.calendar.url);
     } catch {
-      // unreadable transcripts shouldn't stop the pet
+      calendar.setUrl(null);
     }
-  };
-  loadHistory();
-  setInterval(loadHistory, 2 * 60e3).unref();
-  startRelay();
-  tracker.on('transition', notifyTransition);
-  permissions.on('change', pushState);
-  modes.on('change', () => {
-    saveDnd();
-    pushState();
+    scheduleCalendar();
+    setInterval(checkReminders, 30e3).unref();
+    refreshCalendar();
   });
-  modes.on('digest', (digest) => {
-    sendToRenderer('digest', { ...digest, cause: digest.reason === 'away' ? awayCause : null });
-    if (digest.reason === 'away') awayCause = null;
+  step('shortcuts', registerShortcuts);
+  step('power', watchPower);
+  step('screens', () => {
+    for (const event of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(event, keepOnScreen);
   });
-  setInterval(() => tracker.prune(), 60e3).unref();
-  wireTimers();
-
-  try {
-    calendar.setUrl(config.calendar.url);
-  } catch {
-    calendar.setUrl(null);
-  }
-  scheduleCalendar();
-  setInterval(checkReminders, 30e3).unref();
-
-  registerIpc();
-  createWindow();
-  createTray();
-  registerShortcuts();
-  watchPower();
-  refreshCalendar();
-  screen.on('display-removed', () => {
-    if (win) applyBounds(win.getBounds().width, win.getBounds().height);
-  });
+  log('started');
 }
+
+// Errors that nobody caught are written down instead of stopping the pet with a dialog.
+process.on('uncaughtException', (err) => log(`uncaught exception: ${err && err.stack ? err.stack : err}`));
+process.on('unhandledRejection', (err) => log(`unhandled rejection: ${err && err.stack ? err.stack : err}`));
 
 if (process.platform === 'linux') app.commandLine.appendSwitch('enable-transparent-visuals');
 app.setAppUserModelId('dev.claude-pet');
 
-if (!app.requestSingleInstanceLock()) {
-  app.quit();
-} else {
-  app.on('second-instance', () => setVisible(true));
+/**
+ * Another pet may still be closing (an update restarts it, or it was signed out a moment ago):
+ * the lock is tried again for a few seconds before giving up, so the new one isn't the one that
+ * quits and leaves no pet at all.
+ */
+async function takeSingleInstanceLock() {
+  for (let attempt = 0; attempt < 12; attempt++) {
+    if (app.requestSingleInstanceLock()) return true;
+    if (attempt === 0) log('another pet is running, waiting to see if it is closing');
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
+takeSingleInstanceLock().then((locked) => {
+  if (!locked) {
+    log('another pet is running: quitting');
+    return app.quit();
+  }
+  app.on('second-instance', () => {
+    if (win && !win.isDestroyed()) setVisible(true);
+    else if (app.isReady()) step('window', createWindow); // the first start never got a window
+  });
   app.on('window-all-closed', () => {});
   app.on('will-quit', () => globalShortcut.unregisterAll());
   app.on('before-quit', () => {
@@ -1525,6 +1681,9 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     if (process.platform === 'darwin' && app.dock) app.dock.hide();
     // Linux compositors need a moment before transparent windows render correctly.
-    setTimeout(boot, process.platform === 'linux' ? 300 : 0);
+    setTimeout(
+      () => boot().catch((err) => log(`boot failed: ${err && err.stack ? err.stack : err}`)),
+      process.platform === 'linux' ? 300 : 0,
+    );
   });
-}
+});

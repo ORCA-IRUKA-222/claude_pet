@@ -586,6 +586,15 @@ async function doctor() {
     ['クラウド連携', config.cloud.topic && config.cloud.enabled ? `オン（${config.cloud.server}）` : 'オフ'],
   ];
   for (const [label, value] of lines) console.log(`${label}: ${value}`);
+  // why the pet may not have shown up: what it wrote while starting, and why it hid
+  const { tailLog, logFile } = require('../src/core/log');
+  const recentLog = tailLog(12);
+  console.log(`\n起動の記録（${logFile()}）:`);
+  console.log(recentLog.length ? recentLog.map((l) => `  ${l}`).join('\n') : '  まだありません');
+  if (!config.visible)
+    console.log(
+      '\n※ 前回「隠す」にしたため、ペットは隠れたまま起動します。claude-pet（引数なし）か、トレイのアイコンから表示できます。',
+    );
   if (!claude) {
     const install =
       process.platform === 'win32'
