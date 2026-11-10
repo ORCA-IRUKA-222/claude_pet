@@ -1067,6 +1067,32 @@ button {
   background: var(--accent);
 }
 
+/* the × that puts a message away (what the pet says, notifications from other apps) */
+.bubble-close {
+  position: absolute;
+  top: 4px;
+  right: 5px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.bubble-close:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.bubble.closable {
+  padding-right: 26px;
+}
+
 /* what the pet says can be a whole sentence */
 .bubble.toast .bubble-title,
 .bubble.speaking .bubble-title {

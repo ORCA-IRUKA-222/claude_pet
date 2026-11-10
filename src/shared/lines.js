@@ -19,6 +19,7 @@
     break: ['min'], // a pomodoro break starts
     click: [], // the pet was clicked
     arrive: [], // the pet took over (rotation)
+    notice: ['app'], // a notification from another app (Discord, …); app is its name
   };
   const MAX_PER_SCENE = 50;
   const MAX_LENGTH = 200;

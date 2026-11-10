@@ -18,6 +18,7 @@ const EVENTS = new Set([
   'say',
   'lines',
   'notify',
+  'app-notice',
 ]);
 
 contextBridge.exposeInMainWorld('pet', {
@@ -38,6 +39,7 @@ contextBridge.exposeInMainWorld('pet', {
   markAllRead: () => ipcRenderer.send('mark-all-read'),
   dismiss: (id) => ipcRenderer.send('dismiss', id),
   copy: (text) => ipcRenderer.send('copy', text),
+  openNotice: (id) => ipcRenderer.invoke('open-notice', id),
   openTerminal: (sessionId, cwd, cloudId) => ipcRenderer.invoke('open-terminal', { sessionId, cwd, cloudId }),
   openUrl: (url, inApp = false) => ipcRenderer.send('open-url', url, Boolean(inApp)),
   openLink: (url) => ipcRenderer.send('open-link', url),
