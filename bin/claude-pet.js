@@ -582,10 +582,27 @@ async function doctor() {
     ...(latest
       ? [['最近使った Claude Code', `${ENTRYPOINTS[latest.entrypoint] || latest.entrypoint} ${latest.version || ''}`.trim()]]
       : []),
+    [
+      '許可のボタン',
+      config.permissionPrompt.enabled === false
+        ? 'オフ（メニューの「ペットで許可を出す」をオンにしてください）'
+        : config.permissionPrompt.allowAll
+          ? 'すべて自動で許可中（ボタンは出ません。メニューの「すべて自動で許可する」をオフにすると出ます）'
+          : 'オン',
+    ],
     ['自動起動', autostart.isEnabled() ? 'オン' : 'オフ'],
     ['クラウド連携', config.cloud.topic && config.cloud.enabled ? `オン（${config.cloud.server}）` : 'オフ'],
   ];
   for (const [label, value] of lines) console.log(`${label}: ${value}`);
+  // why the pet may not have shown up: what it wrote while starting, and why it hid
+  const { tailLog, logFile } = require('../src/core/log');
+  const recentLog = tailLog(12);
+  console.log(`\n起動の記録（${logFile()}）:`);
+  console.log(recentLog.length ? recentLog.map((l) => `  ${l}`).join('\n') : '  まだありません');
+  if (!config.visible)
+    console.log(
+      '\n※ 前回「隠す」にしたため、ペットは隠れたまま起動します。claude-pet（引数なし）か、トレイのアイコンから表示できます。',
+    );
   if (!claude) {
     const install =
       process.platform === 'win32'

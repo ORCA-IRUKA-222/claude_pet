@@ -410,7 +410,7 @@ Codex 形式のペット（`pet.json` + `spritesheet.webp|png`、192x208 のセ�
 | `scale` | `0.5` | 大きさ（0.5 / 0.75 / 1） |
 | `mini` | `false` | ミニ表示 |
 | `showBubble` | `true` | 吹き出しを表示 |
-| `notifications` | `false` | 入力待ち・完了・エラーでデスクトップ通知 |
+| `notifyMode` | 未設定 | 入力待ち・完了・エラーの知らせ方。`pet`（ペットの吹き出し）/ `system`（システム通知）/ `both` / `off`。未設定なら `pet`（古い `notifications: true` の人は `both`）。右クリックメニューの「通知のしかた」で変えられます |
 | `language` | `"ja"` | `"ja"` または `"en"` |
 | `shortcuts.toggle` / `shortcuts.quickChat` / `shortcuts.screenshot` | `CommandOrControl+Alt+P` / `+C` / `+S` | グローバルショートカット（空文字で無効） |
 | `quickChat.permissionMode` | `"default"` | クイックチャットの権限モード（`plan`, `acceptEdits` など） |
@@ -497,3 +497,12 @@ npm run build:pet    # tools/designs/mochi.js から pets/mochi とアイコン�
 | `tools/` | ピクセルアートの描画とスプライトシートの書き出し |
 | `skills/` | `/pet`・`/hatch-pet`・`/pet-lines` のひな形 |
 | `src/core/lines.js`, `src/shared/lines.js` | ペットのセリフ（読み込みと、場面ごとに選ぶ処理） |
+
+## ライセンス
+
+Copyright (c) 2026 ORCA. All Rights Reserved.
+
+このリポジトリは参照・透明性のために公開していますが、オープンソースでは
+ありません。閲覧と、個人的・非商用での利用は自由です。再配布や商用利用
+（マーケットプレイスでの公開・販売を含む）には、著作権者の事前の許可が
+必要です。詳しくは [LICENSE](LICENSE) を参照してください。

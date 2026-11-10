@@ -391,11 +391,11 @@ function playOnce(name, loops = 1) {
 }
 
 let toastTimer = 0;
-function showToast(title, sub, ms = 6000, { sticky = false } = {}) {
+function showToast(title, sub, ms = 6000, { sticky = false, sessionId = null } = {}) {
   // an alarm stays until it's clicked; small talk doesn't push it away
   if (state.toast && state.toast.sticky && !sticky) return;
   clearTimeout(toastTimer);
-  state.toast = { title, sub, sticky };
+  state.toast = { title, sub, sticky, sessionId };
   if (!sticky)
     toastTimer = setTimeout(() => {
       state.toast = null;
@@ -521,6 +521,8 @@ function moodIcon() {
   if (m.away) return ['💤', t('mode.away')];
   if (m.dnd) return ['🔕', t('mode.dnd')];
   if (m.focus) return ['🍅', t('mode.focus')];
+  // with everything allowed no 許可 button ever shows, so the pet itself says so
+  if (state.autoAllow.all) return ['⚡', t('perm.autoAll')];
   if (state.mood.tired) return ['🔋', ''];
   if (state.mood.night && state.config.greetings) return ['🌙', ''];
   return ['', ''];
@@ -1399,6 +1401,16 @@ function setupControls() {
   setupDrop();
   // a click on what the pet says puts it away; on a session it opens the list
   ui.bubble.addEventListener('click', () => {
+    // a notice about a session opens that conversation; anything else just goes away
+    const about = ui.bubble.classList.contains('toast') && state.toast && state.toast.sessionId;
+    if (about && dismissToast()) {
+      const s = state.sessions.find((x) => x.id === about);
+      // the same as clicking the session in the list
+      if (s && s.source === 'browser' && s.url) return api.openUrl(s.url);
+      if (!s || (s.source === 'cloud' && !s.url)) return openPanel('sessions');
+      openPanel('chat');
+      return continueInChat(about);
+    }
     if (!ui.bubble.classList.contains('toast') || !dismissToast()) openPanel('sessions');
   });
   ui.bubblePause.addEventListener('click', (e) => {
@@ -1598,6 +1610,12 @@ async function boot() {
   });
   api.on('lines', (lines) => {
     state.lines = lines || {};
+  });
+  // 通知: the pet says what happened (a session finished, needs you, or stopped)
+  api.on('notify', ({ title, body, kind, sessionId }) => {
+    showToast(title, firstLine(body, 160), kind === 'waiting' ? 15000 : 8000, { sessionId });
+    if (kind === 'waiting' || kind === 'failed') chime('reminder');
+    if (kind !== 'ready') playOnce('waving', 2); // a finished turn already makes the pet jump
   });
   api.on('transition', ({ to, session, held: quiet }) => {
     if (session.source === 'quickchat' || quiet) return;

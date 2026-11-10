@@ -13,6 +13,7 @@
     "build:pet": "node tools/build-pet.js tools/designs/mochi.js --out pets/mochi && node tools/make-icon.js",
     "test": "node --test \"test/*.test.js\""
   },
+  "license": "LicenseRef-Proprietary",
   "engines": {
     "node": ">=22"
   },

@@ -23,7 +23,8 @@ const DEFAULTS = {
   visible: true,
   alwaysOnTop: true,
   showBubble: true,
-  notifications: false,
+  notifications: false, // before notifyMode: true meant desktop notifications
+  notifyMode: null, // how the pet tells you: 'pet' (a speech bubble) | 'system' | 'both' | 'off'
   language: 'ja',
   position: null, // { x, y } of the window's top-left corner
   shortcuts: {
