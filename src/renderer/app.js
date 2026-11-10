@@ -9,6 +9,7 @@ const ui = {
   root: $('root'),
   panel: $('panel'),
   bubble: $('bubble'),
+  bubbleClose: $('bubble-close'),
   bubbleTitle: $('bubble-title'),
   bubbleClock: $('bubble-clock'),
   bubblePause: $('bubble-pause'),
@@ -391,17 +392,26 @@ function playOnce(name, loops = 1) {
 }
 
 let toastTimer = 0;
-function showToast(title, sub, ms = 6000, { sticky = false, sessionId = null } = {}) {
+
+function expireToast() {
+  state.toast = null;
+  render();
+}
+
+function showToast(title, sub, ms = 6000, { sticky = false, sessionId = null, noticeId = null, more = 0 } = {}) {
   // an alarm stays until it's clicked; small talk doesn't push it away
   if (state.toast && state.toast.sticky && !sticky) return;
   clearTimeout(toastTimer);
-  state.toast = { title, sub, sticky, sessionId };
-  if (!sticky)
-    toastTimer = setTimeout(() => {
-      state.toast = null;
-      render();
-    }, ms);
+  state.toast = { title, sub, sticky, sessionId, noticeId, more };
+  if (!sticky) toastTimer = setTimeout(expireToast, ms);
   render();
+}
+
+/** While the pointer is on a message it stays; a moment after it leaves, it goes. */
+function holdToast(on) {
+  if (!state.toast || state.toast.sticky) return;
+  clearTimeout(toastTimer);
+  if (!on) toastTimer = setTimeout(expireToast, 2000);
 }
 
 function dismissToast() {
@@ -480,10 +490,11 @@ function renderBubble() {
   const perm = visible && s && s.effectiveStatus === 'waiting' ? pendingPermission(s.id) : null;
   // a message for you shows even with the list open (in the input when that is open); alarms show in mini too
   const toast = state.toast && !perm && !state.composerOpen && (!state.config.mini || state.toast.sticky);
+  ui.bubbleClose.hidden = !toast;
   if (toast) {
     hideBubbleExtras();
     ui.bubble.hidden = false;
-    ui.bubble.className = `bubble status-idle toast${state.toast.sticky ? ' sticky' : ''}`;
+    ui.bubble.className = `bubble status-idle toast closable${state.toast.sticky ? ' sticky' : ''}`;
     ui.bubbleTitle.textContent = state.toast.title;
     ui.bubbleSub.replaceChildren(document.createTextNode(state.toast.sub || ''));
     ui.bubbleSub.hidden = !state.toast.sub;
@@ -1400,7 +1411,20 @@ function setupControls() {
   setupPointer(ui.mini);
   setupDrop();
   // a click on what the pet says puts it away; on a session it opens the list
+  ui.bubbleClose.addEventListener('click', (e) => {
+    e.stopPropagation();
+    dismissToast();
+  });
+  ui.bubble.addEventListener('mouseenter', () => holdToast(true));
+  ui.bubble.addEventListener('mouseleave', () => holdToast(false));
   ui.bubble.addEventListener('click', () => {
+    // a notification from another app: a tap opens that app
+    const noticeId = ui.bubble.classList.contains('toast') && state.toast && state.toast.noticeId;
+    if (noticeId) {
+      dismissToast();
+      api.openNotice(noticeId);
+      return;
+    }
     // a notice about a session opens that conversation; anything else just goes away
     const about = ui.bubble.classList.contains('toast') && state.toast && state.toast.sessionId;
     if (about && dismissToast()) {
@@ -1607,6 +1631,13 @@ async function boot() {
       else showToast(pet.displayName, t('toast.arrived'));
     }
     render();
+  });
+  // a notification from another app (Discord, …): the pet says it, then it goes by itself
+  api.on('app-notice', ({ id, title, body, said }) => {
+    const more = state.toast && state.toast.noticeId ? state.toast.more + 1 : 0; // several in a row
+    const sub = [firstLine(body, 160), more ? t('bubble.more', { n: more }) : ''].filter(Boolean).join(' · ');
+    showToast(title, sub, 5000, { noticeId: id, more });
+    if (!state.config.mini && said) playOnce('waving', 1);
   });
   api.on('lines', (lines) => {
     state.lines = lines || {};

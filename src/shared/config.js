@@ -85,6 +85,9 @@ const DEFAULTS = {
     refreshMinutes: 15,
   },
   dnd: { active: false, until: null, allowWaiting: true },
+  // Notifications from other apps (Discord, …) said by the pet. Windows only: they are read from
+  // the notification database. Off until you turn it on; only the apps listed here are passed on.
+  appNotices: { enabled: false, apps: ['discord'] },
   awayMinutes: 5,
   greetings: true, // greetings by time of day, battery and sleep
 };

@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 const { pathToFileURL } = require('url');
 const {
   app,
@@ -33,6 +34,7 @@ const rotation = require('../core/rotation');
 const { openInTerminal, openCloudTask } = require('../core/terminal');
 const { openInEditor } = require('../core/editor');
 const { linesFor } = require('../core/lines');
+const { NoticeWatcher, SAFE_APP_ID } = require('../core/winnotify');
 const PetLines = require('../shared/lines');
 const { TimeKeeper } = require('../core/timers');
 const { Modes } = require('../core/modes');
@@ -586,6 +588,16 @@ function buildMenu() {
         click: () => setNotifyMode(mode),
       })),
     },
+    ...(process.platform === 'win32'
+      ? [
+          {
+            label: t('menu.appNotices'),
+            type: 'checkbox',
+            checked: appNoticesOn(),
+            click: (item) => setAppNotices({ enabled: item.checked }),
+          },
+        ]
+      : []),
     {
       label: t('menu.permissionPrompt'),
       type: 'checkbox',
@@ -896,6 +908,99 @@ function notify(title, body = '', { silent = false, session = null, kind = null,
   const system = mode === 'system' || mode === 'both' || !speak;
   if (system && Notification.isSupported()) {
     new Notification({ title: heading, body: detail.slice(0, 200), silent }).show();
+  }
+}
+
+// ---------------------------------------------------------------- notifications from other apps
+
+const recentNotices = new Map(); // id → the app's AppUserModelID, so a tap can open that app
+let noticeWatcher = null;
+let noticeError = null;
+
+// CLAUDE_PET_NOTICE_DB points at another notification database (for testing; Windows' own is the default)
+const NOTICE_DB = process.env.CLAUDE_PET_NOTICE_DB || null;
+
+function appNoticesOn() {
+  return (process.platform === 'win32' || Boolean(NOTICE_DB)) && Boolean(config.appNotices && config.appNotices.enabled);
+}
+
+/** The pet says a notification from another app: in its own voice, with the sender and text below. */
+function sayAppNotice(n) {
+  if (modes.holds('ready') || !petCanSpeak()) return; // quiet modes, or the pet can't be seen: Windows shows it anyway
+  const id = `${n.id}-${n.arrival}`;
+  recentNotices.set(id, n.app);
+  for (const key of [...recentNotices.keys()].slice(0, Math.max(0, recentNotices.size - 30))) recentNotices.delete(key);
+  const line = PetLines.pick(linesFor(pet), 'notice', { app: n.appName });
+  const detail = [n.title, n.body].filter(Boolean).join(': ');
+  sendToRenderer('app-notice', {
+    id,
+    app: n.appName,
+    title: line ? line.text : t('appnotice.default', { app: n.appName }),
+    body: detail.slice(0, 300),
+    said: Boolean(line),
+  });
+}
+
+function startNoticeWatcher() {
+  if (noticeWatcher || !appNoticesOn()) return;
+  noticeWatcher = new NoticeWatcher({
+    ...(NOTICE_DB ? { file: NOTICE_DB } : {}),
+    apps: () => (config.appNotices && config.appNotices.apps) || [],
+  });
+  noticeWatcher.on('notice', sayAppNotice);
+  noticeWatcher.on('error', (err) => {
+    noticeError = err.message;
+    console.error(`app notices: ${err.message}`);
+  });
+  noticeWatcher.start();
+}
+
+function stopNoticeWatcher() {
+  if (noticeWatcher) noticeWatcher.stop();
+  noticeWatcher = null;
+}
+
+function setAppNotices(patch = {}) {
+  const next = { ...config.appNotices };
+  if (typeof patch.enabled === 'boolean') next.enabled = patch.enabled;
+  if (Array.isArray(patch.apps))
+    next.apps = patch.apps
+      .map((a) => String(a).trim())
+      .filter(Boolean)
+      .slice(0, 20);
+  persist({ appNotices: next });
+  noticeError = null;
+  if (appNoticesOn()) {
+    if (noticeWatcher)
+      noticeWatcher.since = null; // the apps changed: start from now
+    else startNoticeWatcher();
+  } else stopNoticeWatcher();
+  updateTray();
+  return appNoticeStatus();
+}
+
+function appNoticeStatus() {
+  return {
+    supported: process.platform === 'win32' || Boolean(NOTICE_DB),
+    enabled: appNoticesOn(),
+    apps: (config.appNotices && config.appNotices.apps) || [],
+    error: noticeError,
+  };
+}
+
+/** A tap on the bubble: open the app the notification came from. */
+function openNoticeApp(id) {
+  const aumid = recentNotices.get(String(id));
+  if (!aumid) return { ok: false, error: 'unknown notice' };
+  if (process.platform !== 'win32' || !SAFE_APP_ID.test(aumid)) return { ok: false, error: 'cannot open' };
+  try {
+    // the same as picking the app in the Start menu
+    const child = spawn('explorer.exe', [`shell:AppsFolder\\${aumid}`], { detached: true, stdio: 'ignore' });
+    child.on('error', () => {});
+    child.unref();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
   }
 }
 
@@ -1237,6 +1342,23 @@ async function handleControl({ action, value }) {
       return typeof value === 'boolean' ? setAutostart(value) : readAutostart();
     case 'cloud':
       return value && typeof value === 'object' ? updateCloud(value) : cloudStatus();
+    case 'notices': {
+      if (value && typeof value === 'object') setAppNotices(value);
+      return appNoticeStatus();
+    }
+    case 'notice-test': {
+      // a sample notification, to see the bubble without waiting for a real one
+      const v = value && typeof value === 'object' ? value : {};
+      sayAppNotice({
+        id: 'test',
+        arrival: Date.now(),
+        app: 'test.app',
+        appName: String(v.app || 'Discord').slice(0, 40),
+        title: String(v.title || 'さくら (#general)').slice(0, 100),
+        body: String(v.body || 'プロデューサー、今日のレッスン何時から？').slice(0, 200),
+      });
+      return {};
+    }
     case 'reload-lines': {
       // after a line pack was added or edited: no restart, no change of pet
       const lines = linesFor(pet);
@@ -1311,6 +1433,8 @@ function registerIpc() {
     // the desktop app opens claude.ai pages from claude://claude.ai/<path>, as Claude Code does
     shell.openExternal(url.replace(/^https:\/\//, 'claude://')).catch(() => shell.openExternal(url));
   });
+
+  ipcMain.handle('open-notice', (_e, id) => openNoticeApp(id));
 
   ipcMain.handle('open-desktop', async (_e, { sessionId }) => {
     try {
@@ -1672,6 +1796,7 @@ async function boot() {
     setInterval(checkReminders, 30e3).unref();
     refreshCalendar();
   });
+  step('app notices', startNoticeWatcher);
   step('shortcuts', registerShortcuts);
   step('power', watchPower);
   step('screens', () => {

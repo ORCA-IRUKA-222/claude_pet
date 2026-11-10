@@ -74,3 +74,9 @@ test('importPack checks the file and copies it into the lines folder', () => {
   fs.writeFileSync(bad, 'not json');
   assert.throws(() => importPack(bad, dir), /JSON/);
 });
+
+test('the notice scene says which app it is from', () => {
+  const lines = normalize({ notice: ['{app}から通知よ', 'ピコン！'] });
+  assert.equal(pick(lines, 'notice', { app: 'Discord' }, { want: ['app'] }).text, 'Discordから通知よ');
+  assert.equal(pick(lines, 'notice', {}).text, 'ピコン！', 'without an app name only the lines that need none are used');
+});

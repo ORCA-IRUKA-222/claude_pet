@@ -296,6 +296,31 @@ Claude Code からは `/pet rotate on`, `/pet rotate 30`（30 分ごと）, `/pe
 - メニューや `/pet use` で選んだペットは、そこから 1 回分の間隔だけ表示が続きます。
 - スリープから復帰したときも、時間が過ぎていればすぐ交代します。
 
+## 他のアプリの通知（Discord など）
+
+Windows に届く Discord などの通知を、ペットが拾って、吹き出しで知らせます。ペットのセリフ（`notice` の場面）でしゃべるので、キャラクターの声で「Discord から連絡よ、プロデューサー」と言い、その下に送り主と本文が小さく出ます。
+
+- 吹き出しは **約 5 秒で自動で消えます**。右上の **×** でも消せます。マウスを乗せている間は消えず、離れると少しして消えます。
+- **タップすると、その通知を出したアプリが開きます**（スタートメニューから開くのと同じです）。
+- 続けて届いたときは、新しいものに替わり、「ほか 1 件」と数えます。
+- おやすみモードと、ポモドーロの集中中は出しません。
+
+**Windows 専用で、最初はオフです。** 右クリックメニューの「他のアプリ（Discord など）の通知を吹き出しで出す」か、次のコマンドで有効にします。
+
+```bash
+claude-pet notices on                 # オンにする（off でオフ）
+claude-pet notices apps discord line  # 対象のアプリ（既定は discord）。名前の一部で指定します
+claude-pet notices doctor             # 通知を読めるかの診断。最近届いた通知のアプリ名も分かります
+claude-pet notices test               # ためしの通知を出して、見た目を確かめる
+```
+
+仕組みと注意:
+
+- Windows は届いた通知を `%LOCALAPPDATA%\Microsoft\Windows\Notifications\wpndatabase.db` に保存しています。ペットはこのファイルのコピーを数秒ごとに読みます。**公式に用意された方法ではないため、Windows の更新で読めなくなる可能性があります。** 読めないときは `claude-pet notices doctor` で、どこで止まっているかが分かります。
+- 読むのは、`apps` に入れたアプリの通知だけです。内容は表示するだけで、保存も送信もしません。
+- **元の Windows の通知（バナー）もそのまま出ます。** 二重に出るのが気になるときは、Windows の「設定 → システム → 通知」で、そのアプリの「通知バナーを表示する」だけをオフにしてください（通知センターへの表示は残します。ペットはそこに届いた通知を読みます）。
+- 通知がオフのアプリ、集中モード（応答不可）で止められている通知は読めません。
+
 ## ペットのセリフ
 
 ペットごとに、場面に合わせたセリフを登録できます。登録した中から毎回ランダムに 1 つ選んでしゃべり、同じセリフが続けて出ることはありません。セリフのない場面やペットは、いつもの文のままです。
@@ -311,6 +336,7 @@ Claude Code からは `/pet rotate on`, `/pet rotate 30`（30 分ごと）, `/pe
 | `focus` / `break` | ポモドーロの集中 / 休憩が始まるとき | `{min}`（分） |
 | `click` | ペットをクリックしたとき | なし |
 | `arrive` | 交代でそのペットが出てきたとき | なし |
+| `notice` | Discord など他のアプリの通知が届いたとき（[他のアプリの通知](#他のアプリの通知discord-など)） | `{app}`（アプリの名前） |
 
 セリフは `~/.claude-pet/lines/` に置く JSON ファイルです。1 つのファイルに何人分でも書けて、ペットの id か表示名（`saki.png` から作ったペットなら `saki`）で結び付きます。
 
@@ -410,6 +436,7 @@ Codex 形式のペット（`pet.json` + `spritesheet.webp|png`、192x208 のセ�
 | `scale` | `0.5` | 大きさ（0.5 / 0.75 / 1） |
 | `mini` | `false` | ミニ表示 |
 | `showBubble` | `true` | 吹き出しを表示 |
+| `appNotices.enabled` / `appNotices.apps` | `false` / `["discord"]` | 他のアプリの通知を吹き出しで出す（Windows）と、その対象のアプリ |
 | `notifyMode` | 未設定 | 入力待ち・完了・エラーの知らせ方。`pet`（ペットの吹き出し）/ `system`（システム通知）/ `both` / `off`。未設定なら `pet`（古い `notifications: true` の人は `both`）。右クリックメニューの「通知のしかた」で変えられます |
 | `language` | `"ja"` | `"ja"` または `"en"` |
 | `shortcuts.toggle` / `shortcuts.quickChat` / `shortcuts.screenshot` | `CommandOrControl+Alt+P` / `+C` / `+S` | グローバルショートカット（空文字で無効） |
@@ -496,6 +523,7 @@ npm run build:pet    # tools/designs/mochi.js から pets/mochi とアイコン�
 | `src/electron/` , `src/renderer/` | デスクトップアプリ |
 | `tools/` | ピクセルアートの描画とスプライトシートの書き出し |
 | `skills/` | `/pet`・`/hatch-pet`・`/pet-lines` のひな形 |
+| `src/core/winnotify.js` | 他のアプリの通知を読む（Windows の通知データベース） |
 | `src/core/lines.js`, `src/shared/lines.js` | ペットのセリフ（読み込みと、場面ごとに選ぶ処理） |
 
 ## ライセンス

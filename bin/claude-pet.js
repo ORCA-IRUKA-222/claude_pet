@@ -43,6 +43,13 @@ const HELP = `claude-pet — Claude Code のデスクトップペット
                                  透過 PNG / WebP / GIF のイラストからペットを作成
                                  （--height は「大」サイズのときの高さ px。状態ごとに別の絵も指定可:
                                    idle, running, waiting, ready, failed）
+  claude-pet notices [on|off]    Discord など他のアプリの通知をペットの吹き出しで出す（Windows）
+  claude-pet notices apps <名前...>
+                                 対象のアプリ（既定: discord）。名前の一部で指定します
+  claude-pet notices doctor [--show]
+                                 通知を読めるかの診断（--show で送り主と本文も表示）
+  claude-pet notices test [アプリ名]
+                                 見た目を確かめるための、ためしの通知を出す
   claude-pet lines               セリフがあるペットの一覧（~/.claude-pet/lines）
   claude-pet lines import <ファイル>
                                  セリフのファイル（JSON）を登録して、すぐに反映
@@ -705,6 +712,54 @@ async function main(argv) {
         autostart.disable();
         console.log('PC 起動時の自動起動をやめました');
       }
+      break;
+    }
+    case 'notices': {
+      const winnotify = require('../src/core/winnotify');
+      const [sub, ...rest] = args;
+      if (sub === 'doctor') {
+        const report = winnotify.diagnose({ showText: rest.includes('--show') });
+        for (const s of report.steps) console.log(`${s.ok ? '✓' : '✗'} ${s.name}${s.detail ? `: ${s.detail}` : ''}`);
+        if (report.recent.length) {
+          console.log('\n最近の通知（新しいものが下）:');
+          for (const r of report.recent) {
+            const text = r.title !== undefined ? `  ${r.title}${r.body ? ` / ${r.body}` : ''}` : '';
+            console.log(`  ${r.name.padEnd(14)} ${r.app}  ${r.at}${text}`);
+          }
+          console.log('\n対象にしたいアプリの名前の一部（上の2列目）を claude-pet notices apps で指定します');
+        } else if (report.ok) console.log('\n通知がまだありません。Discord などの通知が届いたあとにもう一度試してください');
+        process.exitCode = report.ok ? 0 : 1;
+        break;
+      }
+      if (sub === 'test') {
+        if (!(await client.isRunning())) await ensureRunning(false);
+        await client.control('notice-test', { app: rest[0] });
+        console.log('ためしの通知を出しました');
+        break;
+      }
+      let patch = null;
+      if (sub === 'on' || sub === 'off') patch = { enabled: sub === 'on' };
+      else if (sub === 'apps' && rest.length)
+        patch = {
+          apps: rest
+            .join(' ')
+            .split(/[,\s]+/)
+            .filter(Boolean),
+        };
+      else if (sub) throw new Error('使い方: claude-pet notices [on | off | apps <名前...> | doctor | test]');
+      let status;
+      if (await client.isRunning()) status = await client.control('notices', patch || undefined);
+      else {
+        const config = loadConfig();
+        if (patch) {
+          config.appNotices = { ...config.appNotices, ...patch };
+          saveConfig(config);
+        }
+        status = { supported: process.platform === 'win32', ...config.appNotices };
+      }
+      console.log(`他のアプリの通知: ${status.enabled ? 'オン' : 'オフ'}（対象: ${status.apps.join(', ') || 'なし'}）`);
+      if (!status.supported) console.log('この機能は Windows 用です（この OS では動きません）');
+      if (status.error) console.log(`読み取りでエラー: ${status.error}\n  claude-pet notices doctor で原因を調べられます`);
       break;
     }
     case 'lines': {
