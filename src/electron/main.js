@@ -277,7 +277,7 @@ function createWindow() {
       sandbox: true,
     },
   });
-  if (config.alwaysOnTop) win.setAlwaysOnTop(true, 'floating');
+  if (config.alwaysOnTop) raise();
   if (process.platform === 'darwin') win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -331,11 +331,23 @@ function createWindow() {
   win.once('ready-to-show', () => showFirst('ready'));
 }
 
+// Windows keeps the pet "on top" only until another topmost window (the Start menu, the
+// taskbar, a video or another app) takes the place above it; it doesn't come back by itself.
+// So it is put on top again now and then, and whenever something changes around it.
+const TOP_LEVEL = process.platform === 'win32' ? 'screen-saver' : 'floating'; // above the taskbar too
+
+function raise() {
+  if (!win || win.isDestroyed() || !config.alwaysOnTop) return;
+  win.setAlwaysOnTop(true, TOP_LEVEL);
+  if (win.isVisible()) win.moveTop();
+}
+
 function setVisible(visible) {
   if (!win || win.isDestroyed()) return;
   if (visible) {
     applyBounds(win.getBounds().width, win.getBounds().height); // back on a screen that is there
     win.showInactive();
+    raise();
   } else win.hide();
   persist({ visible });
   updateTray();
@@ -346,6 +358,7 @@ function keepOnScreen() {
   if (!win || win.isDestroyed()) return;
   const { width, height } = win.getBounds();
   applyBounds(width, height);
+  raise();
 }
 
 function setMini(mini) {
@@ -604,7 +617,10 @@ function buildMenu() {
       checked: config.alwaysOnTop,
       click: (item) => {
         persist({ alwaysOnTop: item.checked });
-        if (win) win.setAlwaysOnTop(item.checked, 'floating');
+        if (win) {
+          if (item.checked) raise();
+          else win.setAlwaysOnTop(false);
+        }
       },
     },
     {
@@ -1649,6 +1665,10 @@ async function boot() {
   step('power', watchPower);
   step('screens', () => {
     for (const event of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(event, keepOnScreen);
+  });
+  step('on top', () => {
+    setInterval(raise, 3000).unref();
+    if (win) win.on('blur', () => setTimeout(raise, 200));
   });
   log('started');
 }
