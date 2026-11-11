@@ -80,6 +80,7 @@ const state = {
   repos: { loading: false, list: [], index: 0 }, // your GitHub repositories, to pick one while cloning
   attachments: [], // files going with the next message (paths on this computer)
   screenshots: new Set(), // which of them are screenshots, so the default question fits
+  qa: {}, // choices made so far in the questions Claude asks: key → { picks: [labels of each question] }
   temporary: null, // a one-off animation (wave, jump) that overrides the status animation
   toast: null, // { title, sub, sticky } shown in the bubble, e.g. when the pet changes; sticky ones (alarms) stay until clicked
   lines: {}, // what this pet says in each scene (~/.claude-pet/lines)
@@ -466,11 +467,96 @@ function permissionButtons(perm, className) {
   return box;
 }
 
+/**
+ * What Claude asks (AskUserQuestion): the options as buttons. With a pending prompt (`perm`) they
+ * answer it: one single-choice question is answered by touching an option; several questions, or a
+ * multiple-choice one, are chosen first and sent with 「答える」. Without one (a cloud session, or
+ * the pet's prompts are off) they are only shown, and the app opens where it can be answered.
+ */
+function questionView(key, questions, { perm = null, session = null, className = '' } = {}) {
+  // the 許可 buttons' row layout is not for a question: only the place it sits in is kept
+  const box = el('div', `qa ${className.replace(/\bperm-row\b/, '')}`.trim());
+  const st = state.qa[key] || (state.qa[key] = { picks: questions.map(() => []) });
+  const single = questions.length === 1 && !questions[0].multiSelect;
+  const send = () => {
+    const answers = {};
+    questions.forEach((q, i) => {
+      const picked = q.options.map((o) => o.label).filter((label) => st.picks[i].includes(label));
+      answers[q.question] = q.multiSelect ? picked : picked[0];
+    });
+    delete state.qa[key];
+    api.answerPermission(perm.id, 'allow', answers).then((ok) => {
+      if (!ok) showToast(t('q.failed'));
+    });
+  };
+  questions.forEach((q, qi) => {
+    const block = el('div', 'qa-q');
+    if (q.header) block.appendChild(el('span', 'chip', q.header));
+    block.appendChild(el('div', 'qa-text', q.question));
+    const options = el('div', 'qa-options');
+    for (const o of q.options) {
+      const picked = st.picks[qi].includes(o.label);
+      const b = button(
+        o.label,
+        () => {
+          if (q.multiSelect) st.picks[qi] = picked ? st.picks[qi].filter((l) => l !== o.label) : [...st.picks[qi], o.label];
+          else st.picks[qi] = [o.label];
+          if (single) send();
+          else render();
+        },
+        `pill-button qa-option${picked ? ' selected' : ''}`,
+      );
+      if (o.description) b.title = o.description;
+      if (!perm) b.disabled = true; // only shown
+      options.appendChild(b);
+    }
+    block.appendChild(options);
+    if (q.multiSelect) block.appendChild(el('div', 'qa-note', t('q.multi')));
+    box.appendChild(block);
+  });
+  const footer = el('div', 'qa-footer');
+  if (perm) {
+    if (!single) {
+      const ready = questions.every((_, i) => st.picks[i].length);
+      const go = button(t('q.answer'), send, 'pill-button allow');
+      go.disabled = !ready;
+      footer.appendChild(go);
+    }
+    footer.appendChild(button(t('perm.terminal'), () => api.answerPermission(perm.id, null), 'text-button muted'));
+    const seconds = Math.max(0, Math.ceil((perm.expiresAt - Date.now()) / 1000));
+    const left = el('span', 'perm-left', t('perm.remaining', { n: seconds }));
+    left.dataset.expires = String(perm.expiresAt);
+    footer.appendChild(left);
+  } else {
+    if (session && session.url)
+      footer.appendChild(button(t('q.openApp'), () => api.openUrl(session.url, true), 'pill-button primary'));
+    footer.appendChild(el('span', 'qa-note', session && session.source === 'cloud' ? t('q.cloudHint') : t('q.terminalHint')));
+  }
+  box.appendChild(footer);
+  return box;
+}
+
+/** Buttons for a pending prompt: a question gets its options, anything else 許可 / 拒否. */
+function permissionControls(perm, className) {
+  if (perm.questions && perm.questions.length) {
+    return questionView(perm.id, perm.questions, { perm, className });
+  }
+  return permissionButtons(perm, className);
+}
+
+/** A question that can't be answered from the pet (a cloud session): its options, and where to answer. */
+function askingOnly(s) {
+  if (!s || s.effectiveStatus !== 'waiting' || !s.questions || !s.questions.length || pendingPermission(s.id)) return null;
+  return s;
+}
+
 function permissionBox(perm) {
   const box = el('div', 'perm-box');
-  box.appendChild(el('div', 'section-title', t('perm.title')));
-  box.appendChild(el('div', 'perm-tool', perm.tool ? `${perm.toolName}: ${perm.tool}` : perm.toolName || ''));
-  box.appendChild(permissionButtons(perm, 'perm-row'));
+  box.appendChild(el('div', 'section-title', perm.questions && perm.questions.length ? t('q.title') : t('perm.title')));
+  if (!perm.questions || !perm.questions.length) {
+    box.appendChild(el('div', 'perm-tool', perm.tool ? `${perm.toolName}: ${perm.tool}` : perm.toolName || ''));
+  }
+  box.appendChild(permissionControls(perm, 'perm-row'));
   return box;
 }
 
@@ -488,8 +574,9 @@ function renderBubble() {
   const visible = state.config.showBubble && !state.config.mini && !state.panelOpen;
   // a permission prompt answered from the pet comes before everything else
   const perm = visible && s && s.effectiveStatus === 'waiting' ? pendingPermission(s.id) : null;
+  const asking = visible ? askingOnly(s) : null; // a question that can only be answered elsewhere
   // a message for you shows even with the list open (in the input when that is open); alarms show in mini too
-  const toast = state.toast && !perm && !state.composerOpen && (!state.config.mini || state.toast.sticky);
+  const toast = state.toast && !perm && !asking && !state.composerOpen && (!state.config.mini || state.toast.sticky);
   ui.bubbleClose.hidden = !toast;
   if (toast) {
     hideBubbleExtras();
@@ -501,7 +588,7 @@ function renderBubble() {
     return;
   }
   // おやすみモード and a pomodoro focus keep finished work quiet
-  const show = visible && s && agg.status !== 'idle' && (!held(agg.status) || Boolean(perm));
+  const show = visible && s && agg.status !== 'idle' && (!held(agg.status) || Boolean(perm || asking));
   ui.bubble.hidden = !show;
   if (!show) return;
   const scene = state.sceneLine;
@@ -520,8 +607,11 @@ function renderBubble() {
   ui.bubbleSub.replaceChildren(document.createTextNode(detail));
   if (others > 0) ui.bubbleSub.appendChild(el('span', 'bubble-more', t('bubble.more', { n: others })));
   ui.bubbleSub.hidden = !ui.bubbleSub.textContent;
-  ui.bubbleActions.hidden = !perm;
-  if (perm) ui.bubbleActions.replaceChildren(permissionButtons(perm, 'perm-row'));
+  ui.bubbleActions.hidden = !(perm || asking);
+  if (perm) ui.bubbleActions.replaceChildren(permissionControls(perm, 'perm-row'));
+  else if (asking) ui.bubbleActions.replaceChildren(questionView(`session:${s.id}`, asking.questions, { session: asking }));
+  // the question is in the buttons' block, so it is not said twice
+  if (perm ? perm.questions : asking) ui.bubbleSub.hidden = true;
   const progress = s.todoProgress && s.effectiveStatus !== 'idle' ? s.todoProgress : null;
   ui.bubbleProgress.hidden = !progress;
   if (progress) ui.bubbleProgressFill.style.width = `${(progress.done / progress.total) * 100}%`;
@@ -733,13 +823,19 @@ function renderSessions() {
 
     // 許可 / 拒否 right in the list, without opening the row
     const perm = s.effectiveStatus === 'waiting' ? pendingPermission(s.id) : null;
-    if (perm && !expanded) item.appendChild(permissionButtons(perm, 'perm-row in-list'));
+    if (perm && !expanded) item.appendChild(permissionControls(perm, 'perm-row in-list'));
 
     if (expanded) {
       const body = el('div', 'session-body');
       const detail = detailText(s);
       body.appendChild(el('div', 'session-detail', detail ? `${activityText(s)} — ${detail}` : activityText(s)));
       if (perm) body.appendChild(permissionBox(perm));
+      else if (askingOnly(s)) {
+        const box = el('div', 'perm-box');
+        box.appendChild(el('div', 'section-title', t('q.title')));
+        box.appendChild(questionView(`session:${s.id}`, s.questions, { session: s, className: 'perm-row' }));
+        body.appendChild(box);
+      }
       if (s.prompt) {
         const box = el('div', 'session-text');
         box.appendChild(el('span', 'who', t('ui.you')));
@@ -1568,6 +1664,12 @@ function applyState({ sessions, aggregate, permissions, autoAllow, modes }) {
   state.permissions = permissions || [];
   state.autoAllow = autoAllow || { all: false, sessions: [] };
   state.modes = modes || { dnd: null, focus: false, away: false };
+  // choices belong to a question that is still open
+  const open = new Set([
+    ...state.permissions.map((p) => p.id),
+    ...sessions.filter((s) => s.questions).map((s) => `session:${s.id}`),
+  ]);
+  for (const key of Object.keys(state.qa)) if (!open.has(key)) delete state.qa[key];
   if (state.expanded && !sessions.some((s) => s.id === state.expanded)) state.expanded = null;
   playStatus();
   render();

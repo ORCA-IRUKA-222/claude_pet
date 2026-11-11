@@ -34,7 +34,7 @@ const rotation = require('../core/rotation');
 const { openInTerminal, openCloudTask } = require('../core/terminal');
 const { openInEditor } = require('../core/editor');
 const { linesFor } = require('../core/lines');
-const { NoticeWatcher, SAFE_APP_ID } = require('../core/winnotify');
+const { NoticeWatcher, SAFE_APP_ID, launchId } = require('../core/winnotify');
 const PetLines = require('../shared/lines');
 const { TimeKeeper } = require('../core/timers');
 const { Modes } = require('../core/modes');
@@ -970,11 +970,10 @@ function setAppNotices(patch = {}) {
       .slice(0, 20);
   persist({ appNotices: next });
   noticeError = null;
-  if (appNoticesOn()) {
-    if (noticeWatcher)
-      noticeWatcher.since = null; // the apps changed: start from now
-    else startNoticeWatcher();
-  } else stopNoticeWatcher();
+  // Changing the apps needs no restart of the reading: what arrived before is already behind it
+  // (it moves past every notification, passed on or not), so nothing old is replayed.
+  if (appNoticesOn()) startNoticeWatcher();
+  else stopNoticeWatcher();
   updateTray();
   return appNoticeStatus();
 }
@@ -990,8 +989,9 @@ function appNoticeStatus() {
 
 /** A tap on the bubble: open the app the notification came from. */
 function openNoticeApp(id) {
-  const aumid = recentNotices.get(String(id));
-  if (!aumid) return { ok: false, error: 'unknown notice' };
+  const known = recentNotices.get(String(id));
+  if (!known) return { ok: false, error: 'unknown notice' };
+  const aumid = launchId(known);
   if (process.platform !== 'win32' || !SAFE_APP_ID.test(aumid)) return { ok: false, error: 'cannot open' };
   try {
     // the same as picking the app in the Start menu
@@ -1578,7 +1578,14 @@ function registerIpc() {
   });
 
   // Claude Code sessions
-  ipcMain.on('permission-answer', (_e, { id, behavior }) => permissions.answer(String(id), behavior));
+  ipcMain.handle('permission-answer', (_e, { id, behavior, answers }) => {
+    const ok = permissions.answer(String(id), behavior, answers);
+    if (ok)
+      log(
+        `permission ${String(id).slice(0, 8)}: ${behavior === null ? 'left to the terminal' : `answered ${behavior}`}${answers ? ' with an answer' : ''}`,
+      );
+    return ok;
+  });
   ipcMain.on('permission-session', (_e, { id, on }) => permissions.setSessionAllowed(String(id), Boolean(on)));
   ipcMain.on('permission-all', (_e, on) => setAllowAll(Boolean(on)));
   ipcMain.on('pause-session', (_e, id) => {

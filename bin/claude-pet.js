@@ -45,7 +45,7 @@ const HELP = `claude-pet — Claude Code のデスクトップペット
                                    idle, running, waiting, ready, failed）
   claude-pet notices [on|off]    Discord など他のアプリの通知をペットの吹き出しで出す（Windows）
   claude-pet notices apps <名前...>
-                                 対象のアプリ（既定: discord）。名前の一部で指定します
+                                 対象のアプリ（既定: discord）。名前の一部で指定します。all ですべてのアプリ
   claude-pet notices doctor [--show]
                                  通知を読めるかの診断（--show で送り主と本文も表示）
   claude-pet notices test [アプリ名]
@@ -758,6 +758,22 @@ async function main(argv) {
         status = { supported: process.platform === 'win32', ...config.appNotices };
       }
       console.log(`他のアプリの通知: ${status.enabled ? 'オン' : 'オフ'}（対象: ${status.apps.join(', ') || 'なし'}）`);
+      if (process.platform === 'win32') {
+        // which of the apps that sent something lately are passed on, and which are not
+        const seen = new Map();
+        for (const r of winnotify.diagnose().recent) if (!seen.has(r.app)) seen.set(r.app, r.name);
+        const lately = [...seen].filter(([app]) => !/dev\.claude-pet/i.test(app));
+        if (lately.length) {
+          console.log('\n最近通知が来たアプリ:');
+          for (const [app, name] of lately) {
+            console.log(`  ${winnotify.wanted(app, status.apps) ? '✓ 出す  ' : '– 出さない'} ${name}  (${app})`);
+          }
+          if (lately.some(([app]) => !winnotify.wanted(app, status.apps))) {
+            console.log('\n出したいアプリを足すには: claude-pet notices apps discord slack yourphone（名前の一部でよい）');
+            console.log('すべてのアプリを出すには:   claude-pet notices apps all');
+          }
+        }
+      }
       if (!status.supported) console.log('この機能は Windows 用です（この OS では動きません）');
       if (status.error) console.log(`読み取りでエラー: ${status.error}\n  claude-pet notices doctor で原因を調べられます`);
       break;

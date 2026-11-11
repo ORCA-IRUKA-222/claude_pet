@@ -60,6 +60,7 @@ function newSession(id, cwd, ts, extra = {}) {
     startedAt: ts,
     updatedAt: ts,
     lastTs: 0,
+    questions: null, // what Claude asks while it waits for an answer: [{ question, header, options, multiSelect }]
     turnStartedAt: null, // when the current prompt was sent
     lastDuration: null, // how long the last finished turn took
     files: [], // files Claude changed in this turn
@@ -194,13 +195,21 @@ class SessionTracker extends EventEmitter {
       case 'PreToolUse':
         if (ASK_TOOLS[e.tool_name]) {
           this.setWaiting(s, ASK_TOOLS[e.tool_name], e.tool || null, e.tool_name);
+          s.questions = Array.isArray(e.questions) ? e.questions : null;
         } else if (!waiting || !s.waitingTool) {
           this.setRunning(s, toolActivity(e.tool_name), toolDetail(e));
         }
         break;
 
       case 'PermissionRequest':
-        this.setWaiting(s, 'permission', toolDetail(e), e.tool_name);
+        // a question asked as a permission prompt is still a question
+        this.setWaiting(
+          s,
+          ASK_TOOLS[e.tool_name] || 'permission',
+          ASK_TOOLS[e.tool_name] ? e.tool || null : toolDetail(e),
+          e.tool_name,
+        );
+        if (e.tool_name === 'AskUserQuestion') s.questions = Array.isArray(e.questions) ? e.questions : s.questions || null;
         break;
 
       case 'PostToolUse':
@@ -248,6 +257,7 @@ class SessionTracker extends EventEmitter {
 
       case 'Stop':
         this.finishTurn(s, e.ts);
+        s.questions = null;
         s.status = 'ready';
         s.unread = true;
         s.activity = null;
@@ -261,6 +271,7 @@ class SessionTracker extends EventEmitter {
 
       case 'StopFailure':
         this.finishTurn(s, e.ts);
+        s.questions = null;
         s.pauseRequested = false;
         s.status = 'failed';
         s.unread = true;
@@ -277,6 +288,7 @@ class SessionTracker extends EventEmitter {
   }
 
   setRunning(s, activity, detail) {
+    s.questions = null;
     s.status = 'running';
     s.activity = activity;
     s.detail = detail;
@@ -291,6 +303,7 @@ class SessionTracker extends EventEmitter {
   }
 
   setIdle(s) {
+    s.questions = null;
     s.status = 'idle';
     s.activity = null;
     s.detail = null;

@@ -1899,3 +1899,68 @@ textarea.memo-edit:focus {
   color: var(--text);
   opacity: 1;
 }
+
+/* a question Claude asks: its options as buttons */
+.qa {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  min-width: 230px;
+}
+
+.qa.in-list {
+  padding: 0 10px 8px 24px;
+}
+
+.qa-q .chip {
+  align-self: flex-start;
+}
+
+.qa-q {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.qa-text {
+  font-weight: 600;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.qa-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.qa-option {
+  max-width: 100%;
+  white-space: normal;
+  text-align: left;
+}
+
+.qa-option.selected {
+  border-color: transparent;
+  background: var(--accent);
+  color: #fff;
+}
+
+.qa-option:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.qa-note {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.qa-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
