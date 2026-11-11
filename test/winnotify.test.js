@@ -73,6 +73,16 @@ test('app names and the filter', () => {
   assert.equal(appName('Microsoft.WindowsStore_8wekyb3d8bbwe!App'), 'WindowsStore');
   assert.equal(appName('C:\\Program Files\\LINE\\LINE.exe'), 'LINE');
   assert.equal(appName(''), '');
+  // Office apps end in their version; the name is not "15"
+  assert.equal(appName('Microsoft.Office.OUTLOOK.EXE.15'), 'Outlook');
+  assert.equal(appName('Microsoft.Office.WINWORD.EXE.15'), 'Word');
+  assert.equal(appName('Microsoft.Office.EXCEL.EXE.15'), 'Excel');
+  assert.equal(appName('Microsoft.Office.POWERPNT.EXE.15'), 'PowerPoint');
+  assert.equal(appName('com.squirrel.slack.slack'), 'slack');
+  assert.equal(appName('Windows.SystemToast.WiFiNetworkManager'), 'WiFiNetworkManager');
+  assert.equal(appName('Claude_pzs8sxrjxfjjc!Claude'), 'Claude');
+  assert.equal(appName('15'), '15', 'a lone number is all there is');
+  assert.ok(wanted('Microsoft.Office.OUTLOOK.EXE.15', ['outlook']), 'the shown name can be used in the apps list');
   assert.ok(wanted('com.squirrel.Discord.Discord', ['discord']));
   assert.ok(wanted('com.squirrel.Discord.Discord', [' DISCORD ']));
   assert.ok(!wanted('com.squirrel.Discord.Discord', ['slack']));

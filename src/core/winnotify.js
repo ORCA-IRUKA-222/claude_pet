@@ -73,6 +73,15 @@ function parsePayload(payload) {
   return { title: texts[0] || '', body: texts.slice(1).join('\n') };
 }
 
+const KNOWN_APPS = {
+  OUTLOOK: 'Outlook',
+  WINWORD: 'Word',
+  EXCEL: 'Excel',
+  POWERPNT: 'PowerPoint',
+  ONENOTE: 'OneNote',
+  MSTEAMS: 'Teams',
+};
+
 /**
  * A name for an app from its AppUserModelID:
  *   com.squirrel.Discord.Discord → Discord, Microsoft.WindowsStore_8wekyb3d8bbwe!App → WindowsStore,
@@ -85,7 +94,13 @@ function appName(primaryId) {
   if (/[\\/]/.test(id) && exe) return exe[1];
   id = id.split('!')[0].replace(/_[a-z0-9]{13}$/i, '');
   const parts = id.split('.').filter(Boolean);
-  return parts[parts.length - 1] || id;
+  // Office apps end in the version: Microsoft.Office.OUTLOOK.EXE.15 is Outlook, not "15"
+  while (parts.length > 1 && /^(\d+|exe)$/i.test(parts[parts.length - 1])) parts.pop();
+  let name = parts[parts.length - 1] || id;
+  name = KNOWN_APPS[name.toUpperCase()] || name;
+  // an all-capitals program name (OUTLOOK) reads better as a word
+  if (/^[A-Z]{6,}$/.test(name)) name = name[0] + name.slice(1).toLowerCase();
+  return name;
 }
 
 const OWN_APP = /dev\.claude-pet/i;
