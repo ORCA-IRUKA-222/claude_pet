@@ -58,7 +58,7 @@ contextBridge.exposeInMainWorld('pet', {
   chooseFolder: (current) => ipcRenderer.invoke('choose-folder', current),
 
   // Claude Code sessions
-  answerPermission: (id, behavior) => ipcRenderer.send('permission-answer', { id, behavior }),
+  answerPermission: (id, behavior, answers) => ipcRenderer.invoke('permission-answer', { id, behavior, answers }),
   setSessionAutoAllow: (id, on) => ipcRenderer.send('permission-session', { id, on }),
   setAllowAll: (on) => ipcRenderer.send('permission-all', on),
   pauseSession: (id) => ipcRenderer.send('pause-session', id),

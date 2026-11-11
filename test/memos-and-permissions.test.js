@@ -108,3 +108,63 @@ test('answers are signed with the shared secret', () => {
   assert.ok(!verify(secret, 'nonce', 'allow', 'nope'));
   assert.ok(!verify(null, 'nonce', 'allow', signature));
 });
+
+const QUESTIONS = [
+  { question: 'どちらですか？', header: '対象', multiSelect: false, options: [{ label: 'A' }, { label: 'B' }] },
+  { question: 'どれを使う？', header: '道具', multiSelect: true, options: [{ label: 'x' }, { label: 'y' }] },
+];
+
+test('a question is answered with one answer for each of its questions', async () => {
+  const { answersPayload, cleanAnswers } = require('../src/core/permissions');
+  const broker = new PermissionBroker({ timeoutMs: 5000 });
+  const asked = broker.request({ session_id: 's1', tool_name: 'AskUserQuestion', questions: QUESTIONS });
+  const [entry] = broker.list();
+  assert.deepEqual(entry.questions, QUESTIONS);
+
+  // what doesn't answer it leaves it open
+  assert.equal(broker.answer(entry.id, 'allow'), false);
+  assert.equal(broker.answer(entry.id, 'allow', { 'どちらですか？': 'A' }), false, 'the second question is missing');
+  assert.equal(broker.answer(entry.id, 'allow', { 'どちらですか？': '  ', 'どれを使う？': 'x' }), false, 'an empty answer');
+  assert.equal(broker.answer(entry.id, 'allow-session'), false);
+  assert.equal(broker.list().length, 1);
+
+  // a list from the multiple-choice question is joined with commas; extra keys are dropped
+  assert.ok(broker.answer(entry.id, 'allow', { 'どちらですか？': 'B', 'どれを使う？': ['x', 'y'], ignored: 'z' }));
+  assert.deepEqual(await asked, { behavior: 'allow', answers: { 'どちらですか？': 'B', 'どれを使う？': 'x, y' } });
+  assert.equal(
+    answersPayload({ b: '2', a: '1' }),
+    answersPayload({ a: '1', b: '2' }),
+    'the order of the keys does not change what is signed',
+  );
+  assert.equal(cleanAnswers(null, {}), null);
+});
+
+test('allowing everything never answers a question for the user', async () => {
+  const broker = new PermissionBroker({ timeoutMs: 5000 });
+  broker.setAllowAll(true);
+  assert.ok(!broker.autoAllows({ session_id: 's1', tool_name: 'AskUserQuestion' }));
+  const asked = broker.request({ session_id: 's1', tool_name: 'AskUserQuestion', questions: QUESTIONS });
+  assert.equal(broker.list().length, 1, 'it waits for the user');
+  broker.setSessionAllowed('s1', true);
+  broker.setAllowAll(false);
+  broker.setAllowAll(true);
+  assert.equal(broker.list().length, 1);
+  broker.answer(broker.list()[0].id, 'deny');
+  assert.deepEqual(await asked, { behavior: 'deny' });
+  assert.deepEqual(
+    await broker.request({ session_id: 's1', tool_name: 'Bash' }),
+    { behavior: 'allow' },
+    'tools still go through',
+  );
+});
+
+test('answers to a question are signed together with the decision', () => {
+  const { answersPayload } = require('../src/core/permissions');
+  const secret = 'a'.repeat(64);
+  const payload = answersPayload({ q: 'A' });
+  const signature = sign(secret, 'nonce', 'allow', payload);
+  assert.ok(verify(secret, 'nonce', 'allow', signature, payload));
+  assert.ok(!verify(secret, 'nonce', 'allow', signature, answersPayload({ q: 'B' })), 'another answer');
+  assert.ok(!verify(secret, 'nonce', 'allow', signature), 'answers removed');
+  assert.ok(verify(secret, 'nonce', 'allow', sign(secret, 'nonce', 'allow')), 'a plain decision is signed as before');
+});

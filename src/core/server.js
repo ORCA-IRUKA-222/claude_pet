@@ -5,7 +5,7 @@
 // exception is the claude.ai browser extension, which may report events only.
 
 const http = require('http');
-const { sign } = require('./permissions');
+const { sign, answersPayload } = require('./permissions');
 
 const MAX_BODY = 256 * 1024;
 const NONCE = /^[0-9a-f]{32}$/;
@@ -105,7 +105,13 @@ function startServer({
           const decision = await onPermission(event, { signal: controller.signal });
           if (res.destroyed) return undefined;
           if (!decision || (decision.behavior !== 'allow' && decision.behavior !== 'deny')) return send(res, 200, {});
-          return send(res, 200, { behavior: decision.behavior, signature: sign(secret, body.nonce, decision.behavior) });
+          // an answer to a question carries what was chosen; it is signed together with the decision
+          const answers = decision.answers && typeof decision.answers === 'object' ? decision.answers : null;
+          return send(res, 200, {
+            behavior: decision.behavior,
+            ...(answers ? { answers } : {}),
+            signature: sign(secret, body.nonce, decision.behavior, answersPayload(answers)),
+          });
         }
         const result = await onControl(body);
         return send(res, 200, { ok: true, ...(result || {}) });

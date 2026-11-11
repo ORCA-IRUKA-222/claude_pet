@@ -60,6 +60,26 @@ function summarizeTool(name, input) {
   }
 }
 
+const MAX_QUESTIONS = 4;
+const MAX_OPTIONS = 8;
+
+/** What the pet needs to show a question: the text, the options and whether several may be chosen. */
+function compactQuestions(input) {
+  if (!input || !Array.isArray(input.questions)) return undefined;
+  return input.questions
+    .slice(0, MAX_QUESTIONS)
+    .filter((q) => q && typeof q.question === 'string' && q.question)
+    .map((q) => ({
+      question: clip(q.question, 400),
+      header: clip(q.header, 60),
+      multiSelect: Boolean(q.multiSelect),
+      options: (Array.isArray(q.options) ? q.options : [])
+        .slice(0, MAX_OPTIONS)
+        .filter((o) => o && typeof o.label === 'string')
+        .map((o) => ({ label: clip(o.label, 120), description: clip(o.description, 240) })),
+    }));
+}
+
 /** TodoWrite sends the whole list each time. */
 function compactTodos(input) {
   if (!input || !Array.isArray(input.todos)) return undefined;
@@ -134,6 +154,9 @@ function compact(input) {
         if (typeof file === 'string' && path.isAbsolute(file)) event.file_path = file;
       }
       if (input.tool_name === 'TodoWrite') event.todos = compactTodos(toolInput);
+      if (input.tool_name === 'AskUserQuestion' && input.hook_event_name !== 'PostToolUse') {
+        event.questions = compactQuestions(toolInput);
+      }
       if (input.hook_event_name === 'PostToolUse') event.task = compactTask(input.tool_name, toolInput, input.tool_response);
       break;
     }
@@ -227,7 +250,7 @@ function print(output) {
 }
 
 /** PermissionRequest: wait for the user's answer in the pet. No answer → Claude Code asks as usual. */
-function askPet(event) {
+function askPet(event, input = {}) {
   const { loadConfig, readSecret, permissionTimeoutMs } = require('../shared/config');
   const config = loadConfig();
   const secret = readSecret();
@@ -237,11 +260,22 @@ function askPet(event) {
   setTimeout(exit, timeoutMs + 10e3).unref();
   const nonce = crypto.randomBytes(16).toString('hex');
   post('/permission', { event, nonce }, { timeout: timeoutMs + 5e3 }, (reply) => {
-    const { verify } = require('../core/permissions');
+    const { verify, answersPayload } = require('../core/permissions');
     const behavior = reply && reply.behavior;
-    if ((behavior !== 'allow' && behavior !== 'deny') || !verify(secret, nonce, behavior, reply.signature)) return exit();
+    const answers = reply && reply.answers && typeof reply.answers === 'object' ? reply.answers : null;
+    if (
+      (behavior !== 'allow' && behavior !== 'deny') ||
+      !verify(secret, nonce, behavior, reply.signature, answersPayload(answers))
+    ) {
+      return exit();
+    }
     const t = require('../shared/i18n').translator(config.language);
-    const decision = behavior === 'allow' ? { behavior: 'allow' } : { behavior: 'deny', message: t('permission.deniedByPet') };
+    let decision = behavior === 'allow' ? { behavior: 'allow' } : { behavior: 'deny', message: t('permission.deniedByPet') };
+    if (event.tool_name === 'AskUserQuestion' && behavior === 'allow') {
+      // "allow" alone doesn't answer a question: the original questions go back with the answers
+      if (!answers || !input.tool_input) return exit();
+      decision = { behavior: 'allow', updatedInput: { ...input.tool_input, answers } };
+    }
     print({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision } });
   });
 }
@@ -279,7 +313,7 @@ function main() {
       const event = compact(input);
       if (input.hook_event_name === 'PermissionRequest') {
         clearTimeout(killer);
-        return askPet(event);
+        return askPet(event, input);
       }
       send(event);
     } catch {
@@ -290,4 +324,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { compact, summarizeTool, compactTodos, compactTask };
+module.exports = { compact, summarizeTool, compactTodos, compactTask, compactQuestions };

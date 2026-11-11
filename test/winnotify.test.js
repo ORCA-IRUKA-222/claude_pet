@@ -5,7 +5,16 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { tempDir } = require('./helpers');
-const { NoticeWatcher, parsePayload, fromFiletime, appName, wanted, diagnose, SAFE_APP_ID } = require('../src/core/winnotify');
+const {
+  NoticeWatcher,
+  parsePayload,
+  fromFiletime,
+  appName,
+  wanted,
+  launchId,
+  diagnose,
+  SAFE_APP_ID,
+} = require('../src/core/winnotify');
 
 let sqlite = null;
 try {
@@ -69,6 +78,17 @@ test('app names and the filter', () => {
   assert.ok(!wanted('com.squirrel.Discord.Discord', ['slack']));
   assert.ok(!wanted('com.squirrel.Discord.Discord', []));
   assert.ok(!wanted('com.squirrel.Discord.Discord', ['']));
+  // "all" is every app, except the pet itself
+  assert.ok(wanted('com.squirrel.slack.slack', ['all']));
+  assert.ok(wanted('Microsoft.YourPhone_8wekyb3d8bbwe!YourPhoneNotifications_jp.offerbox', ['*']));
+  assert.ok(!wanted('dev.claude-pet', ['all']));
+  assert.ok(!wanted('dev.claude-pet', ['claude-pet']), 'its own notifications never come back');
+  assert.equal(
+    launchId('Microsoft.YourPhone_8wekyb3d8bbwe!YourPhoneNotifications_com.Slack'),
+    'Microsoft.YourPhone_8wekyb3d8bbwe!App',
+  );
+  assert.equal(launchId('com.squirrel.Discord.Discord'), 'com.squirrel.Discord.Discord');
+  assert.equal(launchId('Claude_pzs8sxrjxfjjc!Claude'), 'Claude_pzs8sxrjxfjjc!Claude');
   assert.ok(SAFE_APP_ID.test('com.squirrel.Discord.Discord'));
   assert.ok(SAFE_APP_ID.test('Microsoft.WindowsStore_8wekyb3d8bbwe!App'));
   assert.ok(!SAFE_APP_ID.test('x" & calc.exe'));

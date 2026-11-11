@@ -337,3 +337,119 @@ test('the browser extension may report events but not control the pet', async ()
     server.close();
   }
 });
+
+const QUESTION_INPUT = {
+  hook_event_name: 'PermissionRequest',
+  session_id: 's1',
+  tool_name: 'AskUserQuestion',
+  tool_input: {
+    questions: [
+      {
+        question: 'どちらのことですか？',
+        header: '通知の対象',
+        multiSelect: false,
+        options: [
+          { label: 'Claude の通知', description: '今ある機能' },
+          { label: 'Discord など', description: '新しい機能' },
+        ],
+      },
+    ],
+  },
+};
+
+/** A pet whose broker answers questions with `reply` ({ behavior, answers }). */
+async function questionServer(reply, { secret = 'f'.repeat(64) } = {}) {
+  const port = await freePort();
+  const broker = new PermissionBroker({ timeoutMs: 5000 });
+  const received = [];
+  broker.on('change', () => {
+    const [entry] = broker.list();
+    if (entry && reply) setTimeout(() => broker.answer(entry.id, reply.behavior, reply.answers), 20);
+  });
+  const server = await startServer({
+    port,
+    secret,
+    onEvent: (e) => received.push(e),
+    onControl: async () => ({}),
+    getStatus: () => ({}),
+    onPermission: (event, opts) => broker.request(event, opts),
+  });
+  return { port, server, received, broker };
+}
+
+test('compact() keeps what the pet needs to show a question', () => {
+  const event = compact(QUESTION_INPUT);
+  assert.equal(event.tool, 'どちらのことですか？');
+  assert.deepEqual(event.questions, [
+    {
+      question: 'どちらのことですか？',
+      header: '通知の対象',
+      multiSelect: false,
+      options: [
+        { label: 'Claude の通知', description: '今ある機能' },
+        { label: 'Discord など', description: '新しい機能' },
+      ],
+    },
+  ]);
+  const many = compact({
+    ...QUESTION_INPUT,
+    tool_input: {
+      questions: Array.from({ length: 9 }, (_, i) => ({
+        question: `q${i}`,
+        options: Array.from({ length: 20 }, (_, j) => ({ label: `o${j}` })),
+      })),
+    },
+  });
+  assert.equal(many.questions.length, 4);
+  assert.equal(many.questions[0].options.length, 8);
+  assert.equal(compact({ ...QUESTION_INPUT, hook_event_name: 'PostToolUse' }).questions, undefined);
+});
+
+test('a question answered in the pet goes back with the original questions and the answers', async () => {
+  const answers = { 'どちらのことですか？': 'Discord など' };
+  const { port, server, received } = await questionServer({ behavior: 'allow', answers });
+  try {
+    const result = await runHook(QUESTION_INPUT, port, { home: petHome() });
+    assert.equal(result.code, 0);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: { behavior: 'allow', updatedInput: { ...QUESTION_INPUT.tool_input, answers } },
+      },
+    });
+    assert.equal(received[0].questions[0].options.length, 2, 'the pet got the options');
+  } finally {
+    server.close();
+  }
+});
+
+test('a question: no answer, a missing answer, or a forged one leaves it to the terminal', async () => {
+  const answers = { 'どちらのことですか？': 'Discord など' };
+  const none = await questionServer({ behavior: 'allow', answers: {} }); // rejected by the broker: stays open
+  const terminal = await questionServer({ behavior: null });
+  const forged = await questionServer({ behavior: 'allow', answers }, { secret: 'e'.repeat(64) });
+  try {
+    // the broker refuses an answer that doesn't cover the question, so it times out into "no decision"
+    none.broker.timeoutMs = 300;
+    const c = await runHook(QUESTION_INPUT, none.port, { home: petHome() });
+    assert.equal(c.stdout, '', 'an answer that does not cover the question is not passed on');
+    assert.equal(none.broker.list().length, 0, 'and the question is not left open');
+    const a = await runHook(QUESTION_INPUT, terminal.port, { home: petHome() });
+    assert.equal(a.stdout, '');
+    const b = await runHook(QUESTION_INPUT, forged.port, { home: petHome() });
+    assert.equal(b.stdout, '', 'an answer signed with another secret is ignored');
+  } finally {
+    for (const s of [none, terminal, forged]) s.server.close();
+  }
+});
+
+test('a question can be refused from the pet', async () => {
+  const { port, server } = await questionServer({ behavior: 'deny' });
+  try {
+    const out = JSON.parse((await runHook(QUESTION_INPUT, port, { home: petHome() })).stdout);
+    assert.equal(out.hookSpecificOutput.decision.behavior, 'deny');
+    assert.equal(out.hookSpecificOutput.decision.updatedInput, undefined);
+  } finally {
+    server.close();
+  }
+});

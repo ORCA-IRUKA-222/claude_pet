@@ -282,3 +282,31 @@ test('pausing from the pet ends the turn as idle', () => {
   send('UserPromptSubmit');
   assert.equal(tracker.list()[0].paused, false);
 });
+
+test('what Claude asks is kept while it waits, and goes when it is answered', () => {
+  const { tracker, send } = setup();
+  const questions = [{ question: 'どちら？', header: '対象', multiSelect: false, options: [{ label: 'A', description: '' }] }];
+  send('UserPromptSubmit');
+  send('PreToolUse', { tool_name: 'AskUserQuestion', tool: 'どちら？', questions });
+  let s = tracker.list()[0];
+  assert.equal(s.status, 'waiting');
+  assert.equal(s.activity, 'question');
+  assert.deepEqual(s.questions, questions);
+
+  // the same question arriving as a permission prompt is still a question, not a permission
+  send('PermissionRequest', { tool_name: 'AskUserQuestion', tool: 'どちら？', questions });
+  s = tracker.list()[0];
+  assert.equal(s.activity, 'question');
+  assert.deepEqual(s.questions, questions);
+
+  send('PostToolUse', { tool_name: 'AskUserQuestion' });
+  s = tracker.list()[0];
+  assert.equal(s.status, 'running');
+  assert.equal(s.questions, null);
+
+  send('PreToolUse', { tool_name: 'AskUserQuestion', tool: 'もう一度', questions });
+  send('Stop', { message: 'done' });
+  assert.equal(tracker.list()[0].questions, null);
+  send('PermissionRequest', { tool_name: 'Bash', tool: 'ls' });
+  assert.equal(tracker.list()[0].activity, 'permission');
+});

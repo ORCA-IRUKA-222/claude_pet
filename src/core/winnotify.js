@@ -88,11 +88,27 @@ function appName(primaryId) {
   return parts[parts.length - 1] || id;
 }
 
-/** Does the app match one of the user's names (case-insensitive, on the id or the shown name)? */
+const OWN_APP = /dev\.claude-pet/i;
+
+/**
+ * Does the app match one of the user's names (case-insensitive, on the id or the shown name)?
+ * "all" (or "*") means every app. The pet's own notifications never come back as bubbles.
+ */
 function wanted(primaryId, apps) {
-  if (!Array.isArray(apps) || !apps.length) return false;
+  if (!Array.isArray(apps) || !apps.length || OWN_APP.test(String(primaryId))) return false;
+  const names = apps.filter((a) => typeof a === 'string' && a.trim()).map((a) => a.trim().toLowerCase());
+  if (names.some((a) => a === 'all' || a === '*')) return true;
   const hay = `${primaryId}\n${appName(primaryId)}`.toLowerCase();
-  return apps.some((a) => typeof a === 'string' && a.trim() && hay.includes(a.trim().toLowerCase()));
+  return names.some((a) => hay.includes(a));
+}
+
+/**
+ * What to open for an app's notification. Notifications that Phone Link relays from a phone
+ * come with an id of their own (…!YourPhoneNotifications_com.Slack) that cannot be launched: the
+ * Phone Link app itself is opened.
+ */
+function launchId(primaryId) {
+  return String(primaryId || '').replace(/!YourPhoneNotifications.*$/i, '!App');
 }
 
 /** AppUserModelIDs are made of these; anything else is never handed to the shell. */
@@ -322,6 +338,7 @@ module.exports = {
   parsePayload,
   appName,
   wanted,
+  launchId,
   readNotifications,
   newestArrival,
   diagnose,
