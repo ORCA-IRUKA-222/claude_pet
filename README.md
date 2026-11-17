@@ -324,13 +324,20 @@ claude-pet notices apps all           # すべてのアプリを対象にする�
 claude-pet notices                    # 状態と、最近通知が来たアプリのうち、出すもの / 出さないもの
 claude-pet notices doctor             # 通知を読めるかの診断。最近届いた通知のアプリ名も分かります
 claude-pet notices test               # ためしの通知を出して、見た目を確かめる
+claude-pet notices banners off          # 対象のアプリの元の通知バナーを消す（on で元に戻す）。アプリ名も指定できます
 ```
 
 仕組みと注意:
 
 - Windows は届いた通知を `%LOCALAPPDATA%\Microsoft\Windows\Notifications\wpndatabase.db` に保存しています。ペットはこのファイルのコピーを数秒ごとに読みます。**公式に用意された方法ではないため、Windows の更新で読めなくなる可能性があります。** 読めないときは `claude-pet notices doctor` で、どこで止まっているかが分かります。
 - 読むのは、`apps` に入れたアプリの通知だけです。内容は表示するだけで、保存も送信もしません。
-- **元の Windows の通知（バナー）もそのまま出ます。** 二重に出るのが気になるときは、Windows の「設定 → システム → 通知」で、そのアプリの「通知バナーを表示する」だけをオフにしてください（通知センターへの表示は残します。ペットはそこに届いた通知を読みます）。
+- **元の Windows の通知（バナー）もそのまま出ます。** 右クリックメニューの「通知のしかた」は **Claude Code の知らせ（入力待ち・完了・エラー）だけ** を切り替えるもので、他のアプリの通知には効きません。二重に出るのが気になるときは、次のコマンドで元のバナーだけを消せます。
+  ```bash
+  claude-pet notices banners off            # 対象のアプリ（apps で選んだもの）のバナーを消す
+  claude-pet notices banners off discord    # 名前を指定して消す
+  claude-pet notices banners on             # 元に戻す
+  ```
+  Windows の設定（レジストリの `HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\<アプリ>` の `ShowBanner`）を 0 にするだけで、通知センターには届くので、ペットの吹き出しは出ます。反映されないときは、アプリを開き直してください。`Settings` に名前のないアプリ（パスのような ID のもの）は、Windows の「設定 → システム → 通知」で、そのアプリの「通知バナーを表示する」を手でオフにしてください。
 - スマホの通知を Windows に映す「スマートフォン連携（Phone Link）」の通知は、`YourPhone` という名前のアプリとして届きます。`claude-pet notices apps discord yourphone` のように足すか、`all` にしてください。
 - 通知がオフのアプリ、集中モード（応答不可）で止められている通知は読めません。
 

@@ -12,6 +12,7 @@
 // Nothing is stored or sent anywhere: a notification is read, shown once and forgotten.
 
 const { EventEmitter } = require('events');
+const { spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -303,6 +304,63 @@ class NoticeWatcher extends EventEmitter {
   }
 }
 
+// ---------------------------------------------------------------- banners of the apps' own notifications
+//
+// The apps still show their own banner next to the pet's bubble: the pet reads a copy of the
+// notification, it cannot take the original away. What Windows' settings offer is to switch an
+// app's banner off while the notification still reaches the notification center (and so the
+// pet). The setting is a value in the registry, per app (community-documented, not by Microsoft):
+//   HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\<AppUserModelID>
+//     ShowBanner (DWORD)  absent or 1 = show banners, 0 = no banners
+// Switching them back on removes the value.
+
+const BANNER_KEYS = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings';
+
+/** The registry key of an app, or null when its id can't be a key name safely (a path-like id). */
+function bannerKey(primaryId) {
+  const id = String(primaryId || '');
+  return /^[\w.!-]{1,200}$/.test(id) ? `${BANNER_KEYS}\\${id}` : null;
+}
+
+/** Every app that has sent a notification (all of the database), without the pet itself. */
+function knownApps({ file = dbPath() } = {}) {
+  const watcher = new NoticeWatcher({ file });
+  return watcher.withDb((db) => {
+    const seen = new Map();
+    for (const n of readNotifications(db, 0n)) if (!OWN_APP.test(n.app) && !seen.has(n.app)) seen.set(n.app, appName(n.app));
+    return [...seen].map(([app, name]) => ({ app, name }));
+  });
+}
+
+/** Which of the known apps to change: the ones in `names` when given, otherwise the pet's apps list. */
+function bannerTargets(apps, listed, names = []) {
+  const filter = names.length ? names : listed;
+  return apps.filter((a) => wanted(a.app, filter));
+}
+
+function runReg(args) {
+  const r = spawnSync('reg', args, { encoding: 'utf8', windowsHide: true });
+  return { status: r.status, output: `${r.stdout || ''}${r.stderr || ''}`.trim() };
+}
+
+/**
+ * Switch the banners of these apps off (`on` false) or back on. Nothing else about the apps'
+ * notifications is touched.
+ * @returns {{ app: string, name: string, ok: boolean, detail: string }[]}
+ */
+function setBanners(targets, on, run = runReg) {
+  return targets.map(({ app, name }) => {
+    const key = bannerKey(app);
+    if (!key) return { app, name, ok: false, detail: 'このアプリは、Windows の設定から手で切り替えてください' };
+    const r = on
+      ? run(['delete', key, '/v', 'ShowBanner', '/f'])
+      : run(['add', key, '/v', 'ShowBanner', '/t', 'REG_DWORD', '/d', '0', '/f']);
+    // deleting a value that was never set means the banner was on already
+    if (on && r.status !== 0) return { app, name, ok: true, detail: '元からオンでした' };
+    return { app, name, ok: r.status === 0, detail: r.status === 0 ? '' : r.output.split('\n')[0] };
+  });
+}
+
 /**
  * What is wrong (or right) with reading the database, for `claude-pet notices doctor`.
  * Titles and texts are left out unless `showText` is set.
@@ -354,6 +412,10 @@ module.exports = {
   appName,
   wanted,
   launchId,
+  bannerKey,
+  knownApps,
+  bannerTargets,
+  setBanners,
   readNotifications,
   newestArrival,
   diagnose,

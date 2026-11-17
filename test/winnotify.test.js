@@ -200,3 +200,82 @@ test('doctor describes the database without showing the texts', { skip: !sqlite 
   db.close();
   assert.ok(fs.existsSync(file));
 });
+
+test('banners: which apps, which registry keys, and what is run', () => {
+  const { bannerKey, bannerTargets, setBanners } = require('../src/core/winnotify');
+  const apps = [
+    { app: 'Microsoft.Office.OUTLOOK.EXE.15', name: 'Outlook' },
+    { app: 'com.squirrel.Discord.Discord', name: 'Discord' },
+    { app: 'Microsoft.YourPhone_8wekyb3d8bbwe!YourPhoneNotifications_com.Slack', name: 'YourPhone' },
+    { app: '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe', name: 'powershell' },
+  ];
+  // the pet's apps list, unless names are given
+  assert.deepEqual(
+    bannerTargets(apps, ['discord']).map((a) => a.name),
+    ['Discord'],
+  );
+  assert.deepEqual(
+    bannerTargets(apps, ['discord'], ['outlook']).map((a) => a.name),
+    ['Outlook'],
+  );
+  assert.equal(bannerTargets(apps, ['all']).length, 4);
+
+  assert.equal(
+    bannerKey('com.squirrel.Discord.Discord'),
+    'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\com.squirrel.Discord.Discord',
+  );
+  assert.ok(bannerKey('Microsoft.YourPhone_8wekyb3d8bbwe!YourPhoneNotifications_com.Slack'));
+  assert.equal(bannerKey(apps[3].app), null, 'a path-like id is not a key name');
+  assert.equal(bannerKey('x" /f & calc'), null);
+
+  const calls = [];
+  const run = (args) => {
+    calls.push(args);
+    return { status: 0, output: '' };
+  };
+  const off = setBanners(bannerTargets(apps, ['discord', 'powershell']), false, run);
+  assert.deepEqual(
+    off.map((r) => [r.name, r.ok]),
+    [
+      ['Discord', true],
+      ['powershell', false],
+    ],
+  );
+  assert.deepEqual(calls, [
+    [
+      'add',
+      'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\com.squirrel.Discord.Discord',
+      '/v',
+      'ShowBanner',
+      '/t',
+      'REG_DWORD',
+      '/d',
+      '0',
+      '/f',
+    ],
+  ]);
+
+  calls.length = 0;
+  const on = setBanners([apps[1]], true, (args) => {
+    calls.push(args);
+    return { status: 1, output: 'not found' }; // the value was never set
+  });
+  assert.deepEqual(calls[0].slice(0, 1).concat(calls[0].slice(2)), ['delete', '/v', 'ShowBanner', '/f']);
+  assert.deepEqual([on[0].ok, on[0].detail], [true, '元からオンでした']);
+  assert.equal(setBanners([apps[1]], false, () => ({ status: 5, output: 'access denied\nmore' }))[0].detail, 'access denied');
+});
+
+test('every app that has sent something is known, once, without the pet itself', { skip: !sqlite }, () => {
+  const { knownApps } = require('../src/core/winnotify');
+  const { file, db, add } = makeDb(tempDir());
+  db.prepare('INSERT INTO NotificationHandler VALUES (3, ?, ?)').run('dev.claude-pet', 'app:desktop');
+  add(1, toast('a', 'b'), 1);
+  add(1, toast('c', 'd'), 2);
+  add(2, toast('e', 'f'), 3);
+  add(3, toast('pet', 'own'), 4);
+  assert.deepEqual(
+    knownApps({ file }).map((a) => a.name),
+    ['Discord', 'WindowsStore'],
+  );
+  db.close();
+});

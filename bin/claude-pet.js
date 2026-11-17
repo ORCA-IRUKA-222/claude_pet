@@ -46,6 +46,8 @@ const HELP = `claude-pet — Claude Code のデスクトップペット
   claude-pet notices [on|off]    Discord など他のアプリの通知をペットの吹き出しで出す（Windows）
   claude-pet notices apps <名前...>
                                  対象のアプリ（既定: discord）。名前の一部で指定します。all ですべてのアプリ
+  claude-pet notices banners off|on [アプリ名...]
+                                 元のアプリの通知バナーを消す（on で戻す）。二重に出ないよう、ペットの吹き出しだけにする
   claude-pet notices doctor [--show]
                                  通知を読めるかの診断（--show で送り主と本文も表示）
   claude-pet notices test [アプリ名]
@@ -729,6 +731,30 @@ async function main(argv) {
           console.log('\n対象にしたいアプリの名前の一部（上の2列目）を claude-pet notices apps で指定します');
         } else if (report.ok) console.log('\n通知がまだありません。Discord などの通知が届いたあとにもう一度試してください');
         process.exitCode = report.ok ? 0 : 1;
+        break;
+      }
+      if (sub === 'banners') {
+        // switch the apps' own banners off (or back on) so only the pet's bubble shows
+        const [mode, ...names] = rest;
+        if (mode !== 'off' && mode !== 'on') throw new Error('使い方: claude-pet notices banners off|on [アプリ名...]');
+        if (process.platform !== 'win32') throw new Error('この機能は Windows 用です');
+        const listed = loadConfig().appNotices.apps || [];
+        const targets = winnotify.bannerTargets(winnotify.knownApps(), listed, names);
+        if (!targets.length) {
+          console.log(
+            '対象のアプリがありません（最近通知が来たアプリのうち、対象に入っているものがありません）。claude-pet notices で確かめてください',
+          );
+          break;
+        }
+        const results = winnotify.setBanners(targets, mode === 'on');
+        for (const r of results) {
+          console.log(`${r.ok ? '✓' : '✗'} ${r.name}  (${r.app})${r.detail ? `  ${r.detail}` : ''}`);
+        }
+        console.log(
+          mode === 'off'
+            ? '\nこれらのアプリの通知バナーをオフにしました。通知センターには届くので、ペットの吹き出しは出ます。\n反映されないときは、アプリを開き直すか、サインインし直してください。元に戻すには: claude-pet notices banners on'
+            : '\nこれらのアプリの通知バナーを、元に戻しました',
+        );
         break;
       }
       if (sub === 'test') {
